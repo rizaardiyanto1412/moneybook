@@ -58,10 +58,12 @@ struct MoneybookApp: App {
 struct MenuBarLabel: View {
     var model: AppModel
     var body: some View {
-        let spent = Ledger.totals(Ledger.transactions(in: model.currentPeriod, model.snapshot)).expense
+        // Spent today: expenses only, so moving money between your own accounts doesn't count.
+        let today = Periods.today()
+        let spent = Ledger.totals(Ledger.transactions(in: Period(from: today, to: today), model.snapshot)).expense
         HStack(spacing: 3) {
             Image(systemName: "wallet.bifold")
-            Text(Money.format(spent, currency: model.currency))
+            Text("Today \(Money.format(spent, currency: model.currency))")
         }
     }
 }
