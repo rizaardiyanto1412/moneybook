@@ -2,7 +2,7 @@
 // API traffic (/api, /mcp) is never intercepted or cached: responses are
 // authenticated and the app keeps its own local data cache instead.
 
-const VERSION = "mb-shell-v14";
+const VERSION = "mb-shell-v15";
 const SHELL = [
   "/", "/index.html", "/styles.css", "/manifest.webmanifest",
   "/js/app.js", "/js/api.js", "/js/store.js", "/js/format.js", "/js/ui.js", "/js/components.js",

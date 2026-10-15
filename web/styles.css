@@ -429,6 +429,12 @@ button.row:active, .row.tap:active { background: var(--bg2); }
 .cgrid button svg { width: 27px; height: 27px; }
 .cfg .row { border-bottom: var(--line-w) solid var(--line); min-height: 52px; }
 .ai-help p { line-height: 1.45; margin: 6px 2px 10px; }
+.ai-help .copyable { display: flex; align-items: center; gap: 4px; background: var(--bg2); border-radius: 8px; padding-right: 4px; margin-bottom: 10px; }
+.ai-help .copyable code { flex: 1; min-width: 0; margin: 0; background: none; }
+.ai-help .copyable.token code { font-size: 13px; letter-spacing: .5px; }
+.ai-help code.inline { display: inline; padding: 1px 5px; margin: 0; }
+.ai-help .unlock { margin: -2px 0 14px; }
+.ai-help .unlock p { margin-top: 0; }
 .ai-help code { display: block; background: var(--bg2); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; word-break: break-all; margin-bottom: 10px; -webkit-user-select: all; user-select: all; }
 
 /* backup / import */

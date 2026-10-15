@@ -78,6 +78,8 @@ export function createApp(getDeps: (c: Context) => Deps) {
     const master = authorized(c);
     return c.json(await auth.setPassword(sql(c), await body(c), master, master ? undefined : provided(c)));
   });
+  app.post("/api/auth/api-token", async (c) =>
+    c.json(await auth.revealApiToken(sql(c), await body(c), authorized(c), c.get("deps").apiToken!)));
   app.post("/api/auth/logout", async (c) => {
     await auth.logout(sql(c), provided(c));
     return c.json({ ok: true });

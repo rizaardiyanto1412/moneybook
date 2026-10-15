@@ -70,20 +70,26 @@ async function checkPassword(sql: Sql, password: string) {
   return sameBytes(await pbkdf2(password, unb64(salt), Number(iter)), unb64(hash));
 }
 
-export async function login(sql: Sql, body: Record<string, unknown>, label: string) {
+/** Counts wrong passwords and locks for a while after MAX_FAILS, for sign-in and anything else that asks for the password. */
+async function guardedCheck(sql: Sql, ok: () => Promise<boolean>, wrong: string, status = 401) {
   const now = Date.now();
   const fails = JSON.parse((await getKey(sql, "fails")) ?? '{"n":0,"since":0}') as { n: number; since: number };
   if (fails.n >= MAX_FAILS && now - fails.since < FAIL_WINDOW_MS) {
     const mins = Math.ceil((FAIL_WINDOW_MS - (now - fails.since)) / 60_000);
     throw new ApiError(429, `Too many attempts. Try again in ${mins} minute${mins > 1 ? "s" : ""}.`);
   }
-  const ok = normEmail(body.email) === (await getKey(sql, "email")) && (await checkPassword(sql, String(body.password ?? "")));
-  if (!ok) {
+  if (!(await ok())) {
     const fresh = now - fails.since >= FAIL_WINDOW_MS;
     await setKey(sql, "fails", JSON.stringify({ n: fresh ? 1 : fails.n + 1, since: fresh ? now : fails.since }));
-    throw new ApiError(401, "Wrong email or password");
+    throw new ApiError(status, wrong);
   }
   await setKey(sql, "fails", '{"n":0,"since":0}');
+}
+
+export async function login(sql: Sql, body: Record<string, unknown>, label: string) {
+  await guardedCheck(sql, async () =>
+    normEmail(body.email) === (await getKey(sql, "email")) && (await checkPassword(sql, String(body.password ?? ""))), "Wrong email or password");
+  const now = Date.now();
   const session = "s_" + b64url(crypto.getRandomValues(new Uint8Array(32)));
   await sql.run("INSERT INTO sessions (token_hash, label, created_at, last_used, expires_at) VALUES (?,?,?,?,?)",
     await sha256(session), label.slice(0, 120), now, now, now + SESSION_MS);
@@ -109,4 +115,11 @@ export async function logout(sql: Sql, token: string) {
 
 export async function logoutAll(sql: Sql) {
   await sql.run("DELETE FROM sessions");
+}
+
+/** The API token for AI/MCP clients. A password session must confirm the password, so a stolen session can't take the master key. */
+export async function revealApiToken(sql: Sql, body: Record<string, unknown>, master: boolean, apiToken: string) {
+  // 403, not 401: the web app treats 401 as "signed out".
+  if (!master) await guardedCheck(sql, () => checkPassword(sql, String(body.password ?? "")), "Wrong password", 403);
+  return { token: apiToken };
 }

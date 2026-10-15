@@ -128,14 +128,63 @@ async function openPassword() {
 
 function openAiHelp() {
   const url = `${location.origin}/mcp`;
+  // Signed in with the API token itself: it's already here. With a password, the server asks for it again.
+  let token = auth.get().startsWith("s_") ? "" : auth.get();
+  let shown = false;
+  const cmd = (t) => `claude mcp add --transport http moneybook ${url} --header "Authorization: Bearer ${t}"`;
   openSheet({
     title: "AI Assistant", tall: true,
     html: `<div class="sheet-pad ai-help">
       <p>Your AI can add, edit and summarise expenses here through MCP. Point it at:</p>
-      <code>${esc(url)}</code>
-      <p>with the header <code>Authorization: Bearer &lt;your token&gt;</code>. Claude Code:</p>
-      <code>claude mcp add --transport http moneybook ${esc(url)} --header "Authorization: Bearer &lt;token&gt;"</code>
-      <p class="muted">Rows the AI adds show a small ✦ next to the note.</p></div>`,
+      <div class="copyable"><code>${esc(url)}</code><button class="icon-btn" data-copy="url" aria-label="Copy URL">${icons.copy}</button></div>
+      <p>with the header <code class="inline">Authorization: Bearer &lt;token&gt;</code>. Your token:</p>
+      <div class="copyable token"><code data-token></code>
+        <button class="icon-btn text" data-act="show">Show</button>
+        <button class="icon-btn" data-copy="token" aria-label="Copy token">${icons.copy}</button></div>
+      <form class="unlock" hidden>
+        <p class="muted">Enter your password to see the token.</p>
+        <input class="input" type="password" name="password" autocomplete="current-password" placeholder="Password">
+        <button class="btn block primary" style="margin-top:10px">Unlock</button>
+      </form>
+      <p>Claude Code:</p>
+      <div class="copyable"><code data-cmd></code><button class="icon-btn" data-copy="cmd" aria-label="Copy command">${icons.copy}</button></div>
+      <p class="muted">Keep the token secret: it opens all your data. Rows the AI adds show a small ✦ next to the note.</p></div>`,
+    onMount: (el) => {
+      const form = el.querySelector(".unlock");
+      const render = () => {
+        const masked = "•".repeat(24);
+        el.querySelector("[data-token]").textContent = token && shown ? token : masked;
+        el.querySelector("[data-act=show]").textContent = shown ? "Hide" : "Show";
+        el.querySelector("[data-cmd]").textContent = cmd(token && shown ? token : "<token>");
+      };
+      render();
+      const needToken = () => {
+        if (token) return false;
+        form.hidden = false;
+        form.querySelector("input").focus();
+        return true;
+      };
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        try {
+          token = (await api("/api/auth/api-token", { method: "POST", body: { password: form.password.value } })).token;
+          form.hidden = true;
+          form.reset();
+          toast("Unlocked. Tap copy to copy the token");
+          render();
+        } catch (err) { toast(err.message); }
+      });
+      el.addEventListener("click", async (e) => {
+        const b = e.target.closest("[data-act=show], [data-copy]");
+        if (!b) return;
+        if (b.dataset.act === "show") { if (needToken()) return; shown = !shown; return render(); }
+        const what = b.dataset.copy;
+        if (what !== "url" && needToken()) return;
+        const text = what === "url" ? url : what === "token" ? token : cmd(token);
+        try { await navigator.clipboard.writeText(text); toast(what === "url" ? "URL copied" : what === "token" ? "Token copied" : "Command copied"); }
+        catch { toast("Couldn't copy. Tap Show and copy it by hand"); }
+      });
+    },
   });
 }
 

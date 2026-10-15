@@ -209,6 +209,20 @@ test("email + password sign-in creates a session that works like the token", asy
   assert.equal((await asSession("GET", "/api/accounts")).status, 401);
 });
 
+test("the API token can be shown to a session that confirms the password", async () => {
+  await api("PUT", "/api/auth/password", { email: "me@example.com", password: "hunter22" });
+  const session = (await api("POST", "/api/auth/login", { email: "me@example.com", password: "hunter22" }, { Authorization: "" })).json.session;
+  const asSession = (body: unknown) => api("POST", "/api/auth/api-token", body, { Authorization: `Bearer ${session}` });
+  assert.equal((await api("POST", "/api/auth/api-token", { password: "hunter22" }, { Authorization: "" })).status, 401);
+  assert.equal((await asSession({})).status, 403);
+  assert.equal((await asSession({ password: "wrong-one" })).status, 403);
+  const ok = await asSession({ password: "hunter22" });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.json.token, TOKEN);
+  // With the token itself, no password is needed.
+  assert.equal((await api("POST", "/api/auth/api-token", {})).json.token, TOKEN);
+});
+
 test("login is rate limited after repeated failures", async () => {
   await api("PUT", "/api/auth/password", { email: "me@example.com", password: "hunter22" });
   const tryLogin = (password: string) => api("POST", "/api/auth/login", { email: "me@example.com", password }, { Authorization: "" });
