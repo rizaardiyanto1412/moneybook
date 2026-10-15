@@ -258,6 +258,7 @@ struct DayList: View {
 
     var body: some View {
         let groups = Ledger.groupByDay(transactions)
+        let balances = accountId.map { Ledger.runningBalances(accountId: $0, model.snapshot) }
         if groups.isEmpty {
             MBEmpty(text: emptyText)
         } else {
@@ -266,7 +267,7 @@ struct DayList: View {
                     if i > 0 { MB.bg2.frame(height: 8).bottomLine() }
                     DayHeaderRow(day: g.day, totals: dayTotals(g), addable: addable, accountId: accountId)
                     ForEach(g.transactions) { tx in
-                        TxRow(tx: tx, accountId: accountId, categoryWidth: categoryWidth, pendingDelete: $pendingDelete)
+                        TxRow(tx: tx, accountId: accountId, balance: balances?[tx.id], categoryWidth: categoryWidth, pendingDelete: $pendingDelete)
                     }
                     MB.line.frame(height: 1)
                 }
@@ -339,6 +340,8 @@ struct TxRow: View {
     @Environment(AppModel.self) private var model
     var tx: Transaction
     var accountId: String?
+    /// The account's balance right after this transaction, shown under the amount in an account's ledger.
+    var balance: Double?
     var categoryWidth: CGFloat = 150
     @Binding var pendingDelete: [String]
 
@@ -369,10 +372,17 @@ struct TxRow: View {
                 if !second.isEmpty { Text(second).font(.system(size: 13.5)).foregroundStyle(MB.fg3).lineLimit(1) }
             }
             Spacer(minLength: 8)
-            Text(model.money(tx.amount))
-                .font(.system(size: 15.5).monospacedDigit())
-                .foregroundStyle(amountColor)
-                .lineLimit(1)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(model.money(tx.amount))
+                    .font(.system(size: 15.5).monospacedDigit())
+                    .foregroundStyle(amountColor)
+                if let balance {
+                    Text(model.money(balance, symbol: false))
+                        .font(.system(size: 13).monospacedDigit())
+                        .foregroundStyle(MB.fg3)
+                }
+            }
+            .lineLimit(1)
         }
         .padding(.horizontal, categoryWidth < 120 ? 18 : 24)
         .padding(.vertical, categoryWidth < 120 ? 9 : 10)

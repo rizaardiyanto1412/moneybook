@@ -7,7 +7,7 @@ const recentlyAdded = new Set();
 /** Mark transaction ids to flash once in lists (e.g. ones the AI just added). */
 export function flashIds(ids) { ids.forEach((id) => recentlyAdded.add(id)); setTimeout(() => ids.forEach((id) => recentlyAdded.delete(id)), 2500); }
 
-export function txRow(t, { accountId } = {}) {
+export function txRow(t, { accountId, balances } = {}) {
   const info = catInfo(t);
   const acc = account(t.account_id)?.name ?? t.account_name ?? "?";
   let cls = t.type === "income" ? "inc" : t.type === "expense" ? "exp" : "xfer";
@@ -32,7 +32,7 @@ export function txRow(t, { accountId } = {}) {
       ${title ? `<div class="tx-note">${title}${t.source === "ai" ? `<span class="ai" title="Added by AI">✦</span>` : ""}${t.receipt ? `<span class="clip" title="Receipt">📎</span>` : ""}</div>` : ""}
       ${second ? `<div class="tx-acc">${second}</div>` : ""}
     </div>
-    <div class="tx-amt ${cls}">${amount}</div>
+    <div class="tx-amt ${cls}">${amount}${balances?.has(t.id) ? `<small>${num(balances.get(t.id))}</small>` : ""}</div>
   </div>`;
 }
 

@@ -1,6 +1,6 @@
 // Accounts tab: Assets / Liabilities / Total and grouped balances.
 
-import { account, allTx, balances, currentPeriod, groups, periodRange, txRange } from "../store.js";
+import { account, allTx, balances, currentPeriod, groups, periodRange, runningBalances, txRange } from "../store.js";
 import { addMonths, esc, monthLabel, money } from "../format.js";
 import { dayList, strip } from "../components.js";
 import { monthSwitcher, pageHeader, pushPage, icons } from "../ui.js";
@@ -75,7 +75,7 @@ export function openAccount(id) {
         if (t.type === "income" || (t.type === "transfer" && t.to_account_id === id)) dep += t.amount; else wd += t.amount;
       }
       p.el.querySelector(".strip-wrap").innerHTML = strip([["Deposit", dep, "inc"], ["Withdrawal", wd, "exp"], ["Balance", bal, bal < 0 ? "exp" : ""]]);
-      p.el.querySelector(".scroll").innerHTML = dayList(list, { accountId: id, addable: true, emptyText: `No transactions in ${monthLabel(ym)}` });
+      p.el.querySelector(".scroll").innerHTML = dayList(list, { accountId: id, balances: runningBalances(id), addable: true, emptyText: `No transactions in ${monthLabel(ym)}` });
     },
   });
 }

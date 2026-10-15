@@ -7,6 +7,8 @@ struct TxRow: View {
     var tx: Transaction
     /// In an account's ledger, transfers are coloured as money in or out of that account.
     var accountId: String?
+    /// The account's balance right after this transaction, shown under the amount in an account's ledger.
+    var balance: Double?
 
     var body: some View {
         let s = model.snapshot
@@ -42,11 +44,18 @@ struct TxRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Text(Fmt.money(tx.amount, model.currency))
-                    .font(.system(size: 15).monospacedDigit())
-                    .foregroundStyle(amountColor)
-                    .lineLimit(1)
-                    .layoutPriority(1)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(Fmt.money(tx.amount, model.currency))
+                        .font(.system(size: 15).monospacedDigit())
+                        .foregroundStyle(amountColor)
+                    if let balance {
+                        Text(Fmt.num(balance, model.currency))
+                            .font(.system(size: 13).monospacedDigit())
+                            .foregroundStyle(MM.fg3)
+                    }
+                }
+                .lineLimit(1)
+                .layoutPriority(1)
             }
             .padding(.leading, 14)
             .padding(.trailing, 16)
@@ -112,6 +121,7 @@ struct DayList: View {
         if txs.isEmpty {
             EmptyText(emoji: "🧾", text: emptyText)
         } else {
+            let balances = accountId.map { Ledger.runningBalances(accountId: $0, model.snapshot) }
             LazyVStack(spacing: 0) {
                 ForEach(Array(Ledger.groupByDay(txs).enumerated()), id: \.element.id) { i, g in
                     if i > 0 { MM.bg2.frame(height: 10) }
@@ -119,7 +129,7 @@ struct DayList: View {
                     VStack(spacing: 0) {
                         DayHeader(day: g.day, income: t.income, expense: t.expense)
                         ForEach(Array(g.transactions.enumerated()), id: \.element.id) { j, tx in
-                            TxRow(tx: tx, accountId: accountId)
+                            TxRow(tx: tx, accountId: accountId, balance: balances?[tx.id])
                             if j < g.transactions.count - 1 { Line() }
                         }
                     }

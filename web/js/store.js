@@ -172,6 +172,24 @@ export function balances() {
   });
 }
 
+/** An account's balance right after each of its transactions, by transaction id. */
+export function runningBalances(id) {
+  return cached(`running:${id}`, () => {
+    let bal = account(id)?.initial_balance || 0;
+    const out = new Map();
+    const list = allTx();
+    for (let i = list.length - 1; i >= 0; i--) {
+      const t = list[i];
+      if (t.account_id !== id && t.to_account_id !== id) continue;
+      if (t.type === "income") bal += t.amount;
+      else if (t.type === "expense") bal -= t.amount;
+      else { if (t.account_id === id) bal -= t.amount; if (t.to_account_id === id) bal += t.amount; }
+      out.set(t.id, r2(bal));
+    }
+    return out;
+  });
+}
+
 /** Spending per top-level category for a list: [{id, name, icon, total, count, percent}] desc. */
 export function byCategory(list, type) {
   const m = new Map();
