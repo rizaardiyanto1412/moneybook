@@ -28,6 +28,8 @@ struct MenuBarView: View {
             footer
         }
         .frame(width: 330)
+        // Solid, not the see-through menu material: in dark mode over a white page that turned grey and washed out the text.
+        .background(MB.bg)
         .onAppear {
             let s = model.snapshot
             if accountId == nil { accountId = s.defaultAccountId.flatMap { s.accounts[$0] != nil ? $0 : nil } ?? s.sortedAccounts.first?.id }
