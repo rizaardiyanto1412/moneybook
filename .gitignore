@@ -1,0 +1,22 @@
+# Secrets and local data: never commit
+.deploy-token
+.dev.vars
+.env*
+server/data/
+*.mmbak
+*.sqlite
+*.db
+
+# Build output and dependencies
+node_modules/
+.wrangler/
+build/
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+ios/Moneybook.xcodeproj/
+.DS_Store
+
+# Reverse-engineering notes on the original app: kept private
+docs/realbyte-analysis.md

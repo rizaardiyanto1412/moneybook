@@ -1,0 +1,21 @@
+name = "moneybook"
+main = "src/worker.ts"
+compatibility_date = "2026-10-01"
+
+# Web app (iPhone home-screen app) served from ../web; API and MCP go to the Worker.
+[assets]
+directory = "../web"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/mcp", "/mcp/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "moneybook"
+database_id = "52094d4b-679d-4d14-9a19-e12511a6ad1b"
+
+# Optional: store receipt photos in R2 instead of D1 (R2 must be enabled on the account).
+# [[r2_buckets]]
+# binding = "RECEIPTS"
+# bucket_name = "moneybook-receipts"
+
+# API_TOKEN is a secret: `npx wrangler secret put API_TOKEN`
