@@ -146,7 +146,12 @@ enum SnapshotRunner {
 
     static func save(_ window: NSWindow, to url: URL) {
         guard let view = window.contentView?.superview ?? window.contentView else { return }
-        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        // `-snapshotScale 2` renders Retina-sized images (the headless Mac mini's screen is 1x).
+        let scale = max(1, UserDefaults.standard.double(forKey: "snapshotScale"))
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width * scale), pixelsHigh: Int(view.bounds.height * scale),
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return }
+        rep.size = view.bounds.size
         view.cacheDisplay(in: view.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: url)
         print("snapshot: \(url.lastPathComponent)")

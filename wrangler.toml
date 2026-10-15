@@ -1,0 +1,22 @@
+name = "moneybook"
+main = "server/src/worker.ts"
+compatibility_date = "2026-10-01"
+
+# Web app (iPhone home-screen app) served from web/; API and MCP go to the Worker.
+[assets]
+directory = "web"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/mcp", "/mcp/*"]
+
+# No database_id: `wrangler deploy` creates the database the first time (or reuses the one named
+# "moneybook"), and the tables are created on the first request.
+[[d1_databases]]
+binding = "DB"
+database_name = "moneybook"
+
+# Optional: store receipt photos in R2 instead of D1 (R2 must be enabled on the account).
+# [[r2_buckets]]
+# binding = "RECEIPTS"
+# bucket_name = "moneybook-receipts"
+
+# API_TOKEN is a secret: the Deploy button asks for it, or `npx wrangler secret put API_TOKEN`.

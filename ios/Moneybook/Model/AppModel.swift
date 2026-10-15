@@ -63,13 +63,12 @@ final class AppModel {
     @ObservationIgnored private var isActive = true
     @ObservationIgnored private var receiptCache: [String: UIImage] = [:]
 
-    static let defaultServer = "https://moneybook.rizaardiyanto01.workers.dev"
     private static let serverKey = "serverURL"
     private static let emailKey = "email"
     private static let tokenAccount = "token"
 
     init() {
-        let url = UserDefaults.standard.string(forKey: Self.serverKey) ?? Self.defaultServer
+        let url = UserDefaults.standard.string(forKey: Self.serverKey) ?? ""
         serverURL = url
         token = Keychain.read(Self.tokenAccount) ?? ""
         #if DEBUG

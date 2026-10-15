@@ -61,6 +61,8 @@ struct LoginView: View {
         .background(MM.bg)
         .onAppear {
             if server.isEmpty { server = model.serverURL }
+            // First run: there's no server yet, so ask for it.
+            if server.isEmpty { showServer = true }
             if email.isEmpty { email = model.email }
             if let m = model.errorMessage { error = m; model.errorMessage = nil }
         }

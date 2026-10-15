@@ -4,8 +4,8 @@
   "scripts": {
     "dev": "tsx watch src/node.ts",
     "start": "tsx src/node.ts",
-    "dev:worker": "wrangler dev",
-    "deploy": "npm run build:web && wrangler deploy",
+    "dev:worker": "wrangler dev -c ../wrangler.toml",
+    "deploy": "npm run build:web && wrangler deploy -c ../wrangler.toml",
     "build:web": "esbuild scripts/mmbak.ts --bundle --format=esm --target=es2022 --outfile=../web/js/mmbak.js --banner:js=\"// Generated from server/scripts/mmbak.ts by npm run build:web. Do not edit.\"",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test": "node --test --import tsx test/*.test.ts"

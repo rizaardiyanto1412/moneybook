@@ -530,7 +530,7 @@ struct BackupSheet: View {
                         .disabled(busy)
                 }
                 Line()
-                Link(destination: URL(string: model.serverURL) ?? URL(string: AppModel.defaultServer)!) {
+                Link(destination: URL(string: model.serverURL) ?? URL(string: "https://github.com/rizaardiyanto1412/moneybook#import-from-money-manager")!) {
                     row("upload", "Import from Money Manager", "Open the web app → Settings → Backup and choose your .mmbak")
                 }
             }

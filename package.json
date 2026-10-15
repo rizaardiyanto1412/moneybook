@@ -1,0 +1,22 @@
+{
+  "name": "moneybook",
+  "private": true,
+  "description": "Money Manager clone: web app, Mac and iPhone apps, REST API and MCP server for your AI.",
+  "scripts": {
+    "build": "npm --prefix server ci",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.149.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "API_TOKEN": {
+        "description": "Your master key for the apps and your AI. Make a long random one, e.g. `openssl rand -hex 24`, and keep it somewhere safe. You sign in with it the first time, then set an email and password."
+      },
+      "DB": {
+        "description": "Where your transactions live (Cloudflare D1, which is SQLite)."
+      }
+    }
+  }
+}

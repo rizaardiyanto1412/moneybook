@@ -1,0 +1,1 @@
+API_TOKEN=change-me # master key for the apps and your AI; make it long and random (openssl rand -hex 24)
