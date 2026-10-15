@@ -18,12 +18,14 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
                 .background(MB.desk)
         }
-        .overlay { panels }
+        .overlay {
+            panels
+                .animation(.easeOut(duration: 0.16), value: model.drawers)
+                .animation(.easeOut(duration: 0.16), value: model.editor?.id)
+        }
         .ignoresSafeArea()
         .foregroundStyle(MB.fg)
         .tint(MB.accent)
-        .animation(.easeOut(duration: 0.25), value: model.drawers)
-        .animation(.easeOut(duration: 0.25), value: model.editor?.id)
         .onChange(of: model.section) { model.drawers = [] }
         .alert("Moneybook", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
@@ -76,8 +78,13 @@ struct DrawerPanel<Content: View>: View {
             .frame(width: 480)
             .frame(maxHeight: .infinity)
             .background(MB.bg)
-            .compositingGroup()
-            .shadow(color: .black.opacity(0.16), radius: 20, x: -12)
+            // A gradient edge instead of a blurred shadow: much cheaper to draw while the panel slides.
+            .overlay(alignment: .leading) {
+                LinearGradient(colors: [.black.opacity(0.12), .clear], startPoint: .trailing, endPoint: .leading)
+                    .frame(width: 14)
+                    .offset(x: -14)
+                    .allowsHitTesting(false)
+            }
     }
 }
 

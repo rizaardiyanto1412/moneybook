@@ -33,7 +33,7 @@ struct TransactionEditor: View {
     @UIState private var confirmDelete = false
     @UIState private var dropTargeted = false
     @FocusState private var focus: Field?
-    @FocusState private var keypadFocused: Bool
+    @UIState private var keyMonitor = KeyMonitor()
 
     private var isEditing: Bool { request.transactionId != nil }
     private var existing: Transaction? { request.transactionId.flatMap { model.snapshot.transactions[$0] } }
@@ -58,10 +58,8 @@ struct TransactionEditor: View {
             }
             if let panel { inputPanel(panel) }
         }
-        .focusable()
-        .focused($keypadFocused)
-        .focusEffectDisabled()
-        .onKeyPress(phases: .down) { press in keyboard(press) }
+        .onAppear { keyMonitor.start { keyboard($0) } }
+        .onDisappear { keyMonitor.stop() }
         .overlay {
             if dropTargeted {
                 RoundedRectangle(cornerRadius: 10).strokeBorder(MB.accent, style: StrokeStyle(lineWidth: 3, dash: [8]))
@@ -391,9 +389,8 @@ struct TransactionEditor: View {
 
     private func showPanel(_ kind: Panel?) {
         focus = nil
-        withAnimation(.easeOut(duration: 0.22)) { panel = kind }
+        withAnimation(.easeOut(duration: 0.12)) { panel = kind }
         if kind == .category { openParent = nil }
-        keypadFocused = true
     }
 
     /// Money Manager walks the fields top to bottom: amount → category (or From → To) → account → note.
@@ -420,7 +417,7 @@ struct TransactionEditor: View {
         if let n = next(after: kind) {
             showPanel(n)
         } else {
-            withAnimation(.easeOut(duration: 0.22)) { panel = nil }
+            withAnimation(.easeOut(duration: 0.12)) { panel = nil }
             if note.isEmpty { focus = .note }
         }
     }
@@ -448,16 +445,27 @@ struct TransactionEditor: View {
         amount = v
     }
 
-    /// Typing on the Mac keyboard drives the keypad while it's open.
-    private func keyboard(_ press: KeyPress) -> KeyPress.Result {
-        if press.key == .escape, panel != nil { withAnimation { panel = nil }; return .handled }
-        guard panel == .amount, focus == nil, press.modifiers.subtracting(.shift).isEmpty else { return .ignored }
-        if press.key == .return { typeKey("done"); return .handled }
-        if press.key == .delete { typeKey("back"); return .handled }
-        let map: [String: String] = ["*": "×", "x": "×", "/": "÷", ",": ".", "=": "="]
-        let c = map[press.characters] ?? press.characters
-        if c.count == 1, "0123456789+-×÷.=".contains(c) { typeKey(c); return .handled }
-        return .ignored
+    /// Typing on the Mac keyboard (number row or numeric keypad) drives the calculator while it's open.
+    /// Returns true when the key was used.
+    private func keyboard(_ e: NSEvent) -> Bool {
+        if e.keyCode == 53, panel != nil { withAnimation(.easeOut(duration: 0.12)) { panel = nil }; return true }
+        guard panel == .amount, focus == nil else { return false }
+        let mods = e.modifierFlags.intersection([.command, .control, .option])
+        guard mods.isEmpty else { return false }
+        switch e.keyCode {
+        case 36, 76: typeKey("done"); return true      // Return, keypad Enter
+        case 51, 117: typeKey("back"); return true     // Delete, forward delete
+        default: break
+        }
+        let map: [String: String] = ["*": "×", "x": "×", "X": "×", "/": "÷", ",": ".", "=": "="]
+        let c = e.charactersIgnoringModifiers ?? ""
+        let k = map[c] ?? c
+        if k.count == 1, "0123456789+-×÷.=".contains(k) {
+            if k == "." && digits == 0 { return true }
+            typeKey(k)
+            return true
+        }
+        return false
     }
 
     private func switchType(_ t: TxType) {
@@ -485,8 +493,7 @@ struct TransactionEditor: View {
             if let day = request.day, day != Periods.today(), let d = Periods.parseStamp(day + "T12:00") { date = d }
             let preferred = request.accountId ?? s.defaultAccountId
             accountId = preferred.flatMap { s.accounts[$0] != nil ? $0 : nil } ?? s.sortedAccounts.first?.id
-            let first = request.startPanel ?? .amount
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { showPanel(first) }
+            panel = request.startPanel ?? .amount
         }
     }
 
@@ -608,6 +615,19 @@ struct TransactionEditor: View {
     /// 1234.5 → "1234.5" (no grouping, no trailing zeros).
     static func plain(_ v: Double) -> String {
         v == v.rounded() ? String(Int64(v)) : String(format: "%.2f", v).replacingOccurrences(of: #"0+$"#, with: "", options: .regularExpression)
+    }
+}
+
+/// Watches key presses in the app while the entry form is open, so typing works without clicking first.
+final class KeyMonitor {
+    private var token: Any?
+    func start(_ handler: @escaping (NSEvent) -> Bool) {
+        stop()
+        token = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in handler(e) ? nil : e }
+    }
+    func stop() {
+        if let token { NSEvent.removeMonitor(token) }
+        token = nil
     }
 }
 

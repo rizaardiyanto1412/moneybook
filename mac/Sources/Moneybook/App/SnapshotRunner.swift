@@ -75,6 +75,17 @@ enum SnapshotRunner {
         await shot("12-editor-new", delay: 1.5, sheet: true)
         model.editor = nil
         try? await Task.sleep(for: .seconds(0.8))
+        // Type "12+34" on the keyboard, the last two digits on the numeric keypad.
+        model.newTransaction()
+        try? await Task.sleep(for: .seconds(1))
+        for (ch, code, pad) in [("1", 18, false), ("2", 19, false), ("+", 69, true), ("3", 85, true), ("4", 86, true)] {
+            if let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: pad ? .numericPad : [], timestamp: 0,
+                                        windowNumber: window.windowNumber, context: nil, characters: ch,
+                                        charactersIgnoringModifiers: ch, isARepeat: false, keyCode: UInt16(code)) {
+                NSApp.postEvent(e, atStart: false)
+            }
+        }
+        await shot("12d-editor-typed", delay: 1)
         model.editor = EditorRequest(transactionId: nil, startPanel: .category)
         await shot("12b-editor-category", delay: 1.5)
         model.editor = EditorRequest(transactionId: nil, startPanel: .account)
