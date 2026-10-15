@@ -2,596 +2,357 @@ import AppKit
 import MoneybookCore
 import SwiftUI
 
+/// Trans. tab: Daily / Calendar / Weekly / Monthly / Summary (web/js/views/trans.js).
 struct TransactionsView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         @Bindable var model = model
         let s = model.snapshot
-        let period = model.navigatesByYear ? model.yearPeriod : model.period
-        let txs = Ledger.transactions(in: period, s).filter { Ledger.matches($0, query: model.searchText, s) }
-        let wide = model.transactionsMode == .calendar
+        let yearMode = model.transactionsMode == .monthly
+        let period = yearMode ? model.yearPeriod : model.period
+        let txs = Ledger.transactions(in: period, s)
 
         VStack(spacing: 0) {
-            TotalsStrip(totals: Ledger.totals(txs), currency: model.currency)
-                .readableWidth(wide ? .infinity : Surface.contentWidth)
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-                .padding(.bottom, 4)
+            VStack(spacing: 0) {
+                MBHeader(title: "Transaction") {
+                    IconButton(symbol: "magnifyingglass", help: "Search (⌘F)") { model.open(.search) }
+                        .keyboardShortcut("f")
+                } right: {
+                    IconButton(symbol: "slider.horizontal.3", help: "Search") { model.open(.search) }
+                }
+                MonthSwitcher(label: yearMode ? String(model.month.year) : Fmt.monthLabel(model.month),
+                              onPrev: { model.step(-1) }, onNext: { model.step(1) }, onLabel: { model.goToToday() })
+                SubTabs(items: TransactionsMode.allCases.map { ($0, $0.rawValue) }, selection: $model.transactionsMode)
+                Strip.incExpTotal(txs)
+            }
+            .background(MB.chrome)
 
             Group {
                 switch model.transactionsMode {
-                case .daily: DailyList(transactions: txs)
-                case .calendar: CalendarMonthView(transactions: txs, period: period)
-                case .monthly: MonthlyView(transactions: txs)
-                case .summary: SummaryView(transactions: txs)
+                case .daily:
+                    ScrollView {
+                        DayList(transactions: txs, addable: true, emptyText: "No transactions in \(Fmt.monthLabel(model.month))")
+                            .padding(.bottom, 40)
+                    }
+                case .calendar: CalendarGrid(transactions: txs, period: period)
+                case .weekly: ScrollView { WeeklyList(transactions: txs, period: period).padding(.bottom, 40) }
+                case .monthly: ScrollView { MonthlyList().padding(.bottom, 40) }
+                case .summary: ScrollView { SummaryCards(transactions: txs) }.background(MB.bg2)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .pageBackground()
-        .navigationTitle("Transactions")
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                Picker("View", selection: $model.transactionsMode) {
-                    ForEach(TransactionsMode.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                .help("Daily (⌘1) · Calendar (⌘2) · Monthly (⌘3) · Summary (⌘4)")
-            }
-        }
-        .searchable(text: $model.searchText, placement: .toolbar, prompt: "Search notes")
-    }
-}
-
-// MARK: - Daily
-
-struct DailyList: View {
-    @Environment(AppModel.self) private var model
-    var transactions: [Transaction]
-    @UIState private var selection = Set<String>()
-    @UIState private var pendingDelete: [String] = []
-
-    var body: some View {
-        let groups = Ledger.groupByDay(transactions)
-        if groups.isEmpty {
-            EmptyStateView(title: model.searchText.isEmpty ? "No transactions" : "No matches",
-                           symbol: model.searchText.isEmpty ? "tray" : "magnifyingglass",
-                           message: model.searchText.isEmpty ? "Press ⌘N to add one, or ask your AI assistant." : "Nothing matches \u{201C}\(model.searchText)\u{201D} in this period.")
-        } else {
-            ScrollView {
-                LazyVStack(spacing: 14) {
-                    ForEach(groups) { g in
-                        VStack(spacing: 0) {
-                            DayHeader(day: g.day, totals: g.totals)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                            Divider()
-                            TransactionCardRows(transactions: g.transactions, selection: $selection, pendingDelete: $pendingDelete)
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: Surface.radius, style: .continuous))
-                        .card(padding: 0)
-                    }
-                }
-                .readableWidth()
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-            }
-            .transactionKeyboard(selection: $selection, pendingDelete: $pendingDelete)
-        }
-    }
-}
-
-/// Rows separated by inset dividers, for use inside a card.
-struct TransactionCardRows: View {
-    var transactions: [Transaction]
-    @Binding var selection: Set<String>
-    @Binding var pendingDelete: [String]
-    var trailingDetail: (Transaction) -> String? = { _ in nil }
-    var showDate = false
-
-    var body: some View {
-        ForEach(Array(transactions.enumerated()), id: \.element.id) { i, tx in
-            if i > 0 { Divider().padding(.leading, 62) }
-            CardTransactionRow(tx: tx, selection: $selection, pendingDelete: $pendingDelete, trailingDetail: trailingDetail(tx), showDate: showDate)
-        }
-    }
-}
-
-/// A transaction row that highlights on hover; click selects (⌘-click toggles), double-click edits.
-struct CardTransactionRow: View {
-    @Environment(AppModel.self) private var model
-    var tx: Transaction
-    @Binding var selection: Set<String>
-    @Binding var pendingDelete: [String]
-    var trailingDetail: String?
-    var showDate = false
-    @UIState private var hovering = false
-
-    var body: some View {
-        let selected = selection.contains(tx.id)
-        TransactionRow(tx: tx, trailingDetail: trailingDetail, showDate: showDate)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(selected ? Color.accentColor.opacity(0.14) : hovering ? Surface.hover : Color.clear)
-            .onHover { hovering = $0 }
-            .onTapGesture {
-                if NSApp.currentEvent?.clickCount == 2 {
-                    model.edit(tx.id)
-                } else if NSEvent.modifierFlags.contains(.command) {
-                    selection.formSymmetricDifference([tx.id])
-                } else {
-                    selection = [tx.id]
-                }
-            }
-            .contextMenu {
-                let ids = selected && selection.count > 1 ? Array(selection) : [tx.id]
-                if ids.count == 1 {
-                    Button("Edit…") { model.edit(tx.id) }
-                    Button("Duplicate") { model.duplicate(tx.id) }
-                    Divider()
-                }
-                Button(ids.count == 1 ? "Delete" : "Delete \(ids.count) Transactions", role: .destructive) { pendingDelete = ids }
-            }
-    }
-}
-
-extension View {
-    /// Double-click edits; context menu and Delete key delete (after confirmation). For `List`s.
-    func transactionContextMenu(selection: Binding<Set<String>>, pendingDelete: Binding<[String]>) -> some View {
-        modifier(TransactionActions(selection: selection, pendingDelete: pendingDelete))
-    }
-
-    /// Delete/Return/Escape handling for a container of `CardTransactionRow`s.
-    func transactionKeyboard(selection: Binding<Set<String>>, pendingDelete: Binding<[String]>) -> some View {
-        modifier(TransactionKeyboard(selection: selection, pendingDelete: pendingDelete))
-    }
-
-    fileprivate func deleteConfirmation(selection: Binding<Set<String>>, pendingDelete: Binding<[String]>) -> some View {
-        modifier(DeleteConfirmation(selection: selection, pendingDelete: pendingDelete))
-    }
-}
-
-private struct TransactionKeyboard: ViewModifier {
-    @Environment(AppModel.self) private var model
-    @Binding var selection: Set<String>
-    @Binding var pendingDelete: [String]
-    @FocusState private var focused: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .focusable()
-            .focusEffectDisabled()
-            .focused($focused)
-            .simultaneousGesture(TapGesture().onEnded { focused = true })
-            .onDeleteCommand { if !selection.isEmpty { pendingDelete = Array(selection) } }
-            .onKeyPress(.return) {
-                guard selection.count == 1, let id = selection.first else { return .ignored }
-                model.edit(id)
-                return .handled
-            }
-            .onKeyPress(.escape) {
-                guard !selection.isEmpty else { return .ignored }
-                selection = []
-                return .handled
-            }
-            .deleteConfirmation(selection: $selection, pendingDelete: $pendingDelete)
-    }
-}
-
-private struct TransactionActions: ViewModifier {
-    @Environment(AppModel.self) private var model
-    @Binding var selection: Set<String>
-    @Binding var pendingDelete: [String]
-
-    func body(content: Content) -> some View {
-        content
-            .contextMenu(forSelectionType: String.self) { ids in
-                if ids.count == 1, let id = ids.first {
-                    Button("Edit…") { model.edit(id) }
-                    Button("Duplicate") { model.duplicate(id) }
-                    Divider()
-                }
-                if !ids.isEmpty {
-                    Button(ids.count == 1 ? "Delete" : "Delete \(ids.count) Transactions", role: .destructive) { pendingDelete = Array(ids) }
-                }
-            } primaryAction: { ids in
-                if let id = ids.first { model.edit(id) }
-            }
-            .onDeleteCommand { if !selection.isEmpty { pendingDelete = Array(selection) } }
-            .onKeyPress(.return) {
-                guard selection.count == 1, let id = selection.first else { return .ignored }
-                model.edit(id)
-                return .handled
-            }
-            .deleteConfirmation(selection: $selection, pendingDelete: $pendingDelete)
-    }
-}
-
-private struct DeleteConfirmation: ViewModifier {
-    @Environment(AppModel.self) private var model
-    @Binding var selection: Set<String>
-    @Binding var pendingDelete: [String]
-
-    func body(content: Content) -> some View {
-        content
-            .confirmationDialog(pendingDelete.count == 1 ? "Delete this transaction?" : "Delete \(pendingDelete.count) transactions?",
-                                isPresented: Binding(get: { !pendingDelete.isEmpty }, set: { if !$0 { pendingDelete = [] } })) {
-                Button("Delete", role: .destructive) {
-                    let ids = pendingDelete
-                    pendingDelete = []
-                    selection.subtract(ids)
-                    Task { await model.delete(transactionIds: ids) }
-                }
-                Button("Cancel", role: .cancel) { pendingDelete = [] }
-            } message: {
-                Text("This can't be undone.")
-            }
-    }
-}
-
-extension AppModel {
-    func duplicate(_ id: String) {
-        guard let t = snapshot.transactions[id] else { return }
-        var d = TransactionDraft()
-        d.type = t.type; d.amount = t.amount; d.accountId = t.accountId; d.toAccountId = t.toAccountId
-        d.categoryId = t.categoryId; d.note = t.note; d.memo = t.memo
-        d.date = Periods.parseStamp(t.date) ?? Date()
-        Task {
-            do { try await save(d) } catch { errorMessage = error.localizedDescription }
         }
     }
 }
 
 // MARK: - Calendar
 
-struct CalendarMonthView: View {
+struct CalendarGrid: View {
     @Environment(AppModel.self) private var model
     var transactions: [Transaction]
     var period: Period
-    @UIState private var selectedDay: String?
-    @UIState private var selection = Set<String>()
-    @UIState private var pendingDelete: [String] = []
 
     var body: some View {
         let s = model.snapshot
         let byDay = Ledger.totalsByDay(transactions)
-        let cells = Periods.calendarGrid(period, firstWeekday: s.firstWeekday)
-        let day = selectedDay.flatMap { period.contains($0) ? $0 : nil } ?? defaultDay
-        HStack(spacing: 0) {
-            VStack(spacing: 6) {
-                HStack(spacing: 4) {
-                    ForEach(Array(Periods.weekdaySymbols(firstWeekday: s.firstWeekday).enumerated()), id: \.offset) { _, sym in
-                        Text(sym).font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(maxWidth: .infinity)
-                    }
+        let days = gridDays(firstWeekday: s.firstWeekday)
+        let rows = days.count / 7
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                ForEach(0..<7, id: \.self) { i in
+                    let w = (s.firstWeekday - 1 + i) % 7 + 1
+                    Text(Periods.weekdaySymbols(firstWeekday: s.firstWeekday)[i])
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(w == 1 ? MB.sun : w == 7 ? MB.sat : MB.fg2)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 3)
                 }
-                let rows = cells.count / 7
-                GeometryReader { geo in
-                    let h = max((geo.size.height - CGFloat(rows - 1) * 4) / CGFloat(max(rows, 1)), 44)
-                    VStack(spacing: 4) {
+            }
+            .background(MB.bg2)
+            .bottomLine()
+            GeometryReader { geo in
+                let h = max(geo.size.height / CGFloat(max(rows, 1)), 64)
+                ScrollView {
+                    VStack(spacing: 0) {
                         ForEach(0..<rows, id: \.self) { r in
-                            HStack(spacing: 4) {
+                            HStack(spacing: 0) {
                                 ForEach(0..<7, id: \.self) { c in
-                                    cell(cells[r * 7 + c], byDay: byDay, selected: day).frame(height: h)
+                                    cell(days[r * 7 + c], byDay: byDay, last: c == 6).frame(height: h)
                                 }
                             }
                         }
                     }
                 }
+                .scrollDisabled(h * CGFloat(rows) <= geo.size.height + 1)
             }
-            .padding(16)
-            .frame(minWidth: 420)
-
-            VStack(alignment: .leading, spacing: 0) {
-                let dayTxs = transactions.filter { $0.day == day }
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(Fmt.longDate(day)).font(.title3.weight(.semibold))
-                        let t = Ledger.totals(dayTxs)
-                        HStack(spacing: 10) {
-                            Text(model.money(t.income)).foregroundStyle(Palette.income)
-                            Text(model.money(t.expense)).foregroundStyle(Palette.expense)
-                        }
-                        .font(.money(12, weight: .medium))
-                    }
-                    Spacer()
-                    Button { model.newTransaction(day: day) } label: { Image(systemName: "plus") }
-                        .buttonStyle(.bordered)
-                        .buttonBorderShape(.circle)
-                        .help("Add a transaction on this day")
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-                if dayTxs.isEmpty {
-                    EmptyStateView(title: "No transactions", symbol: "calendar", message: "Nothing recorded on this day.")
-                } else {
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            TransactionCardRows(transactions: dayTxs, selection: $selection, pendingDelete: $pendingDelete)
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: Surface.radius, style: .continuous))
-                        .card(padding: 0)
-                        .padding(12)
-                    }
-                    .transactionKeyboard(selection: $selection, pendingDelete: $pendingDelete)
-                }
-            }
-            .frame(width: 340)
-            .frame(maxHeight: .infinity, alignment: .top)
-            .background(Surface.card.opacity(0.5))
-            .overlay(alignment: .leading) { Divider() }
         }
     }
 
-    private var defaultDay: String {
-        let today = Periods.today()
-        return period.contains(today) ? today : period.from
+    /// Whole weeks covering the period, padded with days from the neighbouring months.
+    private func gridDays(firstWeekday: Int) -> [String] {
+        var start = period.from
+        while Periods.weekday(start) != firstWeekday { start = Periods.addDays(start, -1) }
+        let lastWeekday = (firstWeekday + 5) % 7 + 1
+        var end = period.to
+        while Periods.weekday(end) != lastWeekday { end = Periods.addDays(end, 1) }
+        return Periods.days(from: start, to: end)
     }
 
-    @ViewBuilder
-    private func cell(_ day: String?, byDay: [String: Totals], selected: String) -> some View {
-        if let day {
-            let t = byDay[day]
-            let isToday = day == Periods.today()
-            let isSelected = day == selected
-            VStack(alignment: .leading, spacing: 1) {
-                HStack {
-                    Text(Fmt.dayNumber(day))
-                        .font(.system(size: 13, weight: isToday ? .bold : .medium, design: .rounded).monospacedDigit())
-                        .foregroundStyle(isToday ? Color.white : dayColor(day))
-                        .frame(minWidth: 22, minHeight: 22)
-                        .background(isToday ? Color.accentColor : .clear, in: Circle())
-                    Spacer()
-                }
-                Spacer(minLength: 0)
-                if let t, t.income > 0 {
-                    Text(model.money(t.income, symbol: false)).foregroundStyle(Palette.income)
-                }
-                if let t, t.expense > 0 {
-                    Text(model.money(t.expense, symbol: false)).foregroundStyle(Palette.expense)
-                }
+    private func cell(_ day: String, byDay: [String: Totals], last: Bool) -> some View {
+        let out = !period.contains(day)
+        let w = Periods.weekday(day)
+        let isToday = day == Periods.today()
+        let t = byDay[day]
+        let dayColor: Color = out ? MB.fg3 : isToday ? .white : w == 1 ? MB.sun : w == 7 ? MB.sat : MB.fg
+        let label = day.hasSuffix("-01") ? "\(day.dropFirst(5).prefix(2))/01" : Fmt.dayNumber(day)
+        return VStack(alignment: .leading, spacing: 0) {
+            Text(label)
+                .font(.system(size: 14))
+                .foregroundStyle(dayColor)
+                .frame(maxWidth: .infinity, minHeight: 18, alignment: .leading)
+                .padding(.leading, 5)
+                .background(isToday ? MB.today : .clear)
+            Spacer(minLength: 0)
+            Group {
+                if let t, t.income > 0 { Text(compact(t.income)).foregroundStyle(MB.inc) }
+                if let t, t.expense > 0 { Text(compact(t.expense)).foregroundStyle(MB.exp) }
+                if let t, t.income > 0, t.expense > 0 { Text(compact(t.total)).foregroundStyle(MB.fg) }
             }
-            .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
+            .font(.system(size: 12).monospacedDigit())
             .lineLimit(1)
             .minimumScaleFactor(0.7)
-            .padding(7)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(isSelected ? Color.accentColor.opacity(0.14) : Surface.card)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(isSelected ? Color.accentColor : Color.primary.opacity(0.06), lineWidth: isSelected ? 1.5 : 1)
-            )
-            .contentShape(Rectangle())
-            .onTapGesture(count: 2) { model.newTransaction(day: day) }
-            .onTapGesture { selectedDay = day }
-            .help(t.map { "Income \(model.money($0.income)) · Expenses \(model.money($0.expense))" } ?? "")
-        } else {
-            Color.clear.frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.trailing, 4)
+        }
+        .padding(.bottom, 3)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(out ? MB.bg2 : .clear)
+        .overlay(alignment: .trailing) { if !last { MB.line.frame(width: 1) } }
+        .bottomLine()
+        .rowHover()
+        .onTapGesture { model.open(.day(day)) }
+    }
+
+    /// The web app's calendar figures: 1.2M above 100k, whole numbers above 1,000.
+    private func compact(_ n: Double) -> String {
+        let a = abs(n)
+        if a >= 100_000 { return n.formatted(.number.notation(.compactName).precision(.fractionLength(0...1))) }
+        if a >= 1000 { return n.formatted(.number.precision(.fractionLength(0))) }
+        return model.money(n, symbol: false)
+    }
+}
+
+// MARK: - Weekly
+
+struct WeeklyList: View {
+    @Environment(AppModel.self) private var model
+    var transactions: [Transaction]
+    var period: Period
+
+    var body: some View {
+        let s = model.snapshot
+        var start = period.from
+        while Periods.weekday(start) != s.firstWeekday { start = Periods.addDays(start, -1) }
+        var weeks: [Period] = []
+        var w = start
+        while w <= period.to { weeks.append(Period(from: w, to: Periods.addDays(w, 6))); w = Periods.addDays(w, 7) }
+        let today = Periods.today()
+        return VStack(spacing: 0) {
+            ForEach(weeks.reversed(), id: \.from) { wk in
+                let t = Ledger.totals(transactions.filter { $0.day >= wk.from && $0.day <= wk.to })
+                let cur = today >= wk.from && today <= wk.to
+                HStack(alignment: .center, spacing: 14) {
+                    Text(mdRange(wk)).font(.system(size: 15).monospacedDigit()).foregroundStyle(MB.fgNote)
+                    Spacer()
+                    Text(model.money(t.income)).foregroundStyle(MB.inc).frame(minWidth: 80, alignment: .trailing)
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text(model.money(t.expense)).foregroundStyle(MB.exp)
+                        Text(model.money(t.total)).font(.system(size: 13).monospacedDigit()).foregroundStyle(MB.fg3)
+                    }
+                    .frame(minWidth: 80, alignment: .trailing)
+                }
+                .font(.system(size: 15).monospacedDigit())
+                .padding(.horizontal, 24)
+                .padding(.vertical, 9)
+                .frame(minHeight: 58)
+                .background(cur ? MB.accent.opacity(0.07) : .clear)
+                .bottomLine()
+                .rowHover()
+                .onTapGesture { model.open(.week(wk)) }
+            }
         }
     }
 
-    private func dayColor(_ day: String) -> Color {
-        switch Periods.weekday(day) {
-        case 1: Palette.expense.opacity(0.85)
-        case 7: Palette.income.opacity(0.85)
-        default: .primary
+    private func mdRange(_ p: Period) -> String {
+        func md(_ d: String) -> String { "\(d.dropFirst(5).prefix(2))/\(d.suffix(2))" }
+        return "\(md(p.from)) ~ \(md(p.to))"
+    }
+}
+
+struct WeekDetailView: View {
+    @Environment(AppModel.self) private var model
+    var period: Period
+
+    var body: some View {
+        let txs = Ledger.transactions(in: period, model.snapshot)
+        VStack(spacing: 0) {
+            DrawerHeader(title: Fmt.shortRange(period))
+            Strip.incExpTotal(txs)
+            ScrollView { DayList(transactions: txs, emptyText: "Nothing this week", categoryWidth: 96) }
         }
     }
 }
 
 // MARK: - Monthly
 
-struct MonthlyView: View {
+struct MonthlyList: View {
     @Environment(AppModel.self) private var model
-    var transactions: [Transaction]
-    @UIState private var expanded = Set<String>()
 
     var body: some View {
         let s = model.snapshot
-        let months = (1...12).map { YearMonth(year: model.month.year, month: $0) }.filter { $0 <= model.currentMonth }.reversed()
+        let cur = model.currentMonth
+        let months = (1...12).reversed().map { YearMonth(year: model.month.year, month: $0) }.compactMap { ym -> (YearMonth, Period, Totals)? in
+            let p = Periods.month(ym, startDay: s.monthStartDay)
+            let t = Ledger.totals(Ledger.transactions(in: p, s))
+            return ym > cur && t.income == 0 && t.expense == 0 ? nil : (ym, p, t)
+        }
         if months.isEmpty {
-            EmptyStateView(title: "Nothing yet", symbol: "calendar", message: "\(String(model.month.year)) hasn't started.")
+            MBEmpty(text: "No data for \(String(model.month.year))")
         } else {
-            ScrollView {
-                VStack(spacing: 10) {
+            VStack(spacing: 0) {
+                ForEach(months, id: \.0) { ym, p, t in
                     HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(Fmt.monthName(ym, short: true)).font(.system(size: 17, weight: .semibold))
+                            Text(Fmt.shortRange(p)).font(.system(size: 12)).foregroundStyle(MB.fg2)
+                        }
                         Spacer()
-                        columnTitle("Income"); columnTitle("Expenses"); columnTitle("Total")
+                        VStack(alignment: .trailing, spacing: 1) {
+                            Text(model.money(t.income)).foregroundStyle(MB.inc)
+                            Text(model.money(t.expense)).foregroundStyle(MB.exp)
+                            Text(model.money(t.total)).font(.system(size: 12.5).monospacedDigit()).foregroundStyle(MB.fg2)
+                        }
+                        .font(.system(size: 14).monospacedDigit())
                     }
-                    .padding(.horizontal, 44)
-                    ForEach(Array(months)) { ym in
-                        monthCard(ym, s: s)
-                    }
-                }
-                .readableWidth()
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-            }
-            .onAppear { expanded.insert(model.currentMonth.key) }
-        }
-    }
-
-    private func monthCard(_ ym: YearMonth, s: Snapshot) -> some View {
-        let p = Periods.month(ym, startDay: s.monthStartDay)
-        let monthTxs = transactions.filter { p.contains($0.date) }
-        let isOpen = expanded.contains(ym.key)
-        return VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(isOpen ? 90 : 0))
-                    .frame(width: 14)
-                totalsRow(title: Text(Fmt.monthName(ym)).font(.headline), subtitle: Fmt.range(p),
-                          totals: Ledger.totals(monthTxs), highlight: ym == model.currentMonth)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                if NSApp.currentEvent?.clickCount == 2 {
-                    model.month = ym
-                    model.transactionsMode = .daily
-                } else {
-                    withAnimation(.snappy(duration: 0.2)) {
-                        if isOpen { expanded.remove(ym.key) } else { expanded.insert(ym.key) }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 12)
+                    .frame(minHeight: 60)
+                    .background(ym == cur ? MB.accent.opacity(0.06) : .clear)
+                    .bottomLine()
+                    .rowHover()
+                    .onTapGesture {
+                        model.month = ym
+                        model.transactionsMode = .daily
                     }
                 }
             }
-            .help("Double-click to open \(Fmt.monthTitle(ym)) in Daily view")
-            if isOpen {
-                Divider()
-                ForEach(Periods.weeks(in: p, firstWeekday: s.firstWeekday), id: \.from) { w in
-                    let wt = Ledger.totals(monthTxs.filter { w.contains($0.date) })
-                    totalsRow(title: Text(Fmt.range(w)).font(.callout), subtitle: nil, totals: wt, highlight: w.contains(Periods.today()))
-                        .padding(.leading, 40)
-                        .padding(.trailing, 16)
-                        .padding(.vertical, 7)
-                        .background(w.contains(Periods.today()) ? Color.accentColor.opacity(0.07) : .clear)
-                }
-                .padding(.vertical, 4)
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: Surface.radius, style: .continuous))
-        .card(padding: 0)
-    }
-
-    private func columnTitle(_ t: String) -> some View {
-        Text(t).font(.caption.weight(.medium)).foregroundStyle(.secondary).frame(width: 120, alignment: .trailing)
-    }
-
-    private func totalsRow(title: Text, subtitle: String?, totals: Totals, highlight: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                title.foregroundStyle(highlight ? Color.accentColor : .primary)
-                if let subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
-            }
-            Spacer()
-            Group {
-                Text(model.money(totals.income)).foregroundStyle(Palette.income).frame(width: 120, alignment: .trailing)
-                Text(model.money(totals.expense)).foregroundStyle(Palette.expense).frame(width: 120, alignment: .trailing)
-                Text(model.money(totals.total)).frame(width: 120, alignment: .trailing)
-            }
-            .font(.money(13, weight: .medium))
         }
     }
 }
 
 // MARK: - Summary
 
-struct SummaryView: View {
+struct SummaryCards: View {
     @Environment(AppModel.self) private var model
     var transactions: [Transaction]
 
     var body: some View {
         let s = model.snapshot
-        let lines = Ledger.budgetLines(s, month: model.month)
-        let budgeted = lines.filter { $0.budget > 0 }
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top, spacing: 14) {
-                    accountsCard(s)
-                    topCategoriesCard(s)
-                }
-                budgetCard(budgeted)
-            }
-            .readableWidth()
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-        }
-    }
-
-    private func accountsCard(_ s: Snapshot) -> some View {
-        let expense = Ledger.totals(transactions).expense
-        let prevPeriod = Periods.month(model.month.adding(months: -1), startDay: s.monthStartDay)
-        let prevExpense = Ledger.totals(Ledger.transactions(in: prevPeriod, s)).expense
-        let byGroup = Dictionary(grouping: transactions.filter { $0.type == .expense }) { s.accounts[$0.accountId]?.groupId ?? "" }
-            .map { (name: s.groups[$0.key]?.name ?? "Other", total: $0.value.reduce(0) { $0 + $1.amount }) }
+        let t = Ledger.totals(transactions)
+        let p = model.period
+        let days = Set(transactions.map(\.day)).count
+        let today = Periods.today()
+        let lastDay = today < p.from ? p.from : today > p.to ? p.to : today
+        let span = max(1, min(Periods.days(from: p.from, to: lastDay).count, 31))
+        let budgets = Ledger.budgetLines(s, month: model.month).filter { $0.budget > 0 }
+        let byAccount = Dictionary(grouping: transactions.filter { $0.type == .expense }, by: \.accountId)
+            .map { (name: s.accounts[$0.key]?.name ?? "?", total: $0.value.reduce(0) { $0 + $1.amount }) }
             .sorted { $0.total > $1.total }
-        let byAccount = Dictionary(grouping: transactions.filter { $0.type != .transfer }, by: \.accountId)
-        let rows = byAccount.map { (id, txs) in (id: id, name: s.accounts[id]?.name ?? "Deleted account", totals: Ledger.totals(txs)) }
-            .sorted { $0.totals.expense > $1.totals.expense }
-        return VStack(alignment: .leading, spacing: 10) {
-            Label("Accounts", systemImage: "creditcard").font(.headline)
-            if model.searchText.isEmpty {
-                HStack {
-                    Text("Compared expenses")
-                    Spacer()
-                    if prevExpense > 0 {
-                        let change = (expense - prevExpense) / prevExpense * 100
-                        Text(String(format: "%@%.0f%%", change >= 0 ? "+" : "", change))
-                            .foregroundStyle(change > 0 ? Palette.expense : Palette.income)
-                        Text("vs \(Fmt.monthName(model.month.adding(months: -1), short: true)) \(model.money(prevExpense))").foregroundStyle(.secondary)
-                    } else {
-                        Text("No expenses last month").foregroundStyle(.secondary)
-                    }
-                }
-                .font(.callout.monospacedDigit())
-                ForEach(byGroup, id: \.name) { g in
-                    HStack {
-                        Text("\(g.name) expenses")
-                        Spacer()
-                        Text(model.money(g.total)).foregroundStyle(Palette.expense)
-                    }
-                    .font(.callout.monospacedDigit())
-                }
-                Divider()
-            }
-            if rows.isEmpty { Text("No activity").foregroundStyle(.secondary) }
-            ForEach(rows, id: \.id) { r in
-                HStack {
-                    Text(r.name)
-                    Spacer()
-                    if r.totals.income > 0 { Text(model.money(r.totals.income)).foregroundStyle(Palette.income) }
-                    Text(model.money(r.totals.expense)).foregroundStyle(Palette.expense).frame(minWidth: 90, alignment: .trailing)
-                }
-                .font(.callout.monospacedDigit())
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
+        let topCats = Array(Ledger.byCategory(transactions, type: .expense, s).prefix(3))
 
-    private func topCategoriesCard(_ s: Snapshot) -> some View {
-        let slices = Array(Ledger.byCategory(transactions, type: .expense, s).prefix(6))
-        return VStack(alignment: .leading, spacing: 10) {
-            Label("Top spending", systemImage: "chart.bar").font(.headline)
-            if slices.isEmpty { Text("No expenses").foregroundStyle(.secondary) }
-            ForEach(Array(slices.enumerated()), id: \.element.id) { i, c in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("\(c.icon) \(c.name)")
-                        Spacer()
-                        Text(model.money(c.total)).monospacedDigit()
-                        Text(String(format: "%.0f%%", c.percent)).foregroundStyle(.secondary).monospacedDigit().frame(width: 40, alignment: .trailing)
+        VStack(spacing: 0) {
+            MBCard(title: Fmt.monthLabel(model.month)) {
+                MBRow(label: "Transactions", value: "\(transactions.count) on \(days) day\(days == 1 ? "" : "s")")
+                MBRow(label: "Savings rate", value: t.income > 0 ? "\(Int((t.total / t.income * 100).rounded()))%" : "—")
+                MBRow(label: "Avg. spending / day", value: model.money(t.expense / Double(span)), last: true)
+            }
+            MBCard(title: "Budget", link: ("Budget setting", { model.open(.budgetSetting) })) {
+                if budgets.isEmpty {
+                    MBRow(label: "No budgets yet. Click \u{201C}Budget setting\u{201D}.", valueColor: MB.fg2, last: true)
+                } else {
+                    ForEach(Array(budgets.enumerated()), id: \.element.id) { i, line in BudgetBar(line: line, last: i == budgets.count - 1) }
+                }
+            }
+            if !byAccount.isEmpty {
+                MBCard(title: "Exp. by account") {
+                    ForEach(Array(byAccount.enumerated()), id: \.offset) { i, r in
+                        MBRow(label: r.name, value: model.money(r.total), valueColor: MB.exp, last: i == byAccount.count - 1)
                     }
-                    .font(.callout)
-                    ProgressBar(ratio: c.percent / 100, tint: Palette.chartColor(i), height: 5)
+                }
+            }
+            if !topCats.isEmpty {
+                MBCard(title: "Top categories") {
+                    ForEach(Array(topCats.enumerated()), id: \.element.id) { i, c in
+                        MBRow(label: c.name, value: model.money(c.total), emoji: c.icon.isEmpty ? nil : c.icon, last: i == topCats.count - 1)
+                    }
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
+        .padding(.top, 12)
     }
+}
 
-    private func budgetCard(_ lines: [BudgetLine]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Budget", systemImage: "gauge.with.dots.needle.33percent").font(.headline)
-                Spacer()
-                Button("Open Budget") { model.section = .budget }.buttonStyle(.link)
+// MARK: - Day panel and search
+
+struct DayDetailView: View {
+    @Environment(AppModel.self) private var model
+    var day: String
+
+    var body: some View {
+        let txs = Ledger.transactions(in: Period(from: day, to: day), model.snapshot)
+        VStack(spacing: 0) {
+            DrawerHeader(title: Fmt.longDate(day)) {
+                IconButton(symbol: "plus", help: "Add on this day") { model.newTransaction(day: day) }
             }
-            if lines.isEmpty {
-                Text("No budgets set for \(Fmt.monthTitle(model.month)).").foregroundStyle(.secondary)
-            }
-            ForEach(lines) { BudgetRow(line: $0, compact: true) }
+            Strip.incExpTotal(txs)
+            ScrollView { DayList(transactions: txs, emptyText: "Nothing on this day", categoryWidth: 96) }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
+    }
+}
+
+struct SearchView: View {
+    @Environment(AppModel.self) private var model
+    @UIState private var query = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        let s = model.snapshot
+        let q = query.trimmingCharacters(in: .whitespaces)
+        let results = q.isEmpty ? [] : Array(s.transactions.values.filter { tx in
+            Ledger.matches(tx, query: q, s) || model.money(tx.amount, symbol: false).contains(q) || String(Int(tx.amount)).contains(q)
+        }.sorted(by: Ledger.sortDescending).prefix(300))
+        VStack(spacing: 0) {
+            DrawerHeader(title: "Search")
+            TextField("Note, description, category, amount", text: $query)
+                .textFieldStyle(.plain)
+                .font(.system(size: 16))
+                .padding(.horizontal, 12)
+                .frame(height: 44)
+                .background(MB.bg2, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(focused ? MB.accent : MB.line, lineWidth: 1.5))
+                .focused($focused)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+            ScrollView {
+                if q.isEmpty {
+                    MBEmpty(text: "Search all transactions", emoji: "🔎")
+                } else {
+                    if !results.isEmpty { Strip.incExpTotal(results) }
+                    DayList(transactions: results, emptyText: "No matches", categoryWidth: 96)
+                }
+            }
+        }
+        .onAppear { DispatchQueue.main.async { focused = true } }
     }
 }

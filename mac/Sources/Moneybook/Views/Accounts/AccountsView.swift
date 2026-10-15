@@ -6,251 +6,124 @@ struct AccountEditRequest: Identifiable {
     var accountId: String?
 }
 
+/// Accounts tab: Assets / Liabilities / Total and grouped balances (web/js/views/accounts.js).
 struct AccountsView: View {
     @Environment(AppModel.self) private var model
     @UIState private var editing: AccountEditRequest?
-    @UIState private var pendingDelete: Account?
-    @UIState private var showHidden = false
 
     var body: some View {
-        @Bindable var model = model
-        NavigationStack(path: $model.accountsPath) {
-            list
-                .navigationDestination(for: String.self) { AccountDetailView(accountId: $0, onEdit: { editing = AccountEditRequest(accountId: $0) }) }
-        }
-        .navigationTitle("Accounts")
-        .toolbar {
-            ToolbarItem {
-                Button { editing = AccountEditRequest() } label: { Label("Add Account", systemImage: "plus.rectangle.on.rectangle") }
-                    .help("Add an account")
-            }
-        }
-        .sheet(item: $editing) { AccountEditor(request: $0) }
-        .confirmationDialog("Delete \u{201C}\(pendingDelete?.name ?? "")\u{201D}?", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })) {
-            Button("Delete Account", role: .destructive) {
-                guard let a = pendingDelete else { return }
-                pendingDelete = nil
-                Task {
-                    do { try await model.deleteAccount(a.id) } catch { model.errorMessage = error.localizedDescription }
-                }
-            }
-        } message: {
-            Text("Its transactions stay in your history but will show a deleted account.")
-        }
-    }
-
-    private var list: some View {
         let s = model.snapshot
         let balances = Ledger.balances(s)
         let summary = Ledger.balanceSummary(s, balances: balances)
-        let groups = s.sortedGroups
-        let accounts = s.sortedAccounts.filter { showHidden || !$0.hidden }
-        return ScrollView {
-            VStack(spacing: 14) {
-                HStack(spacing: 12) {
-                    StatCard(title: "Assets", value: model.money(summary.assets), symbol: "arrow.down.left", tint: Palette.income)
-                    StatCard(title: "Liabilities", value: model.money(summary.liabilities), symbol: "arrow.up.right", tint: Palette.expense)
-                    StatCard(title: "Net worth", value: model.money(summary.total), symbol: "equal",
-                             tint: summary.total < 0 ? Palette.expense : .accentColor, valueColor: .primary)
-                }
-                ForEach(groups) { g in
-                    let items = accounts.filter { $0.groupId == g.id }
-                    if !items.isEmpty {
-                        let sum = items.reduce(0) { $0 + (balances[$1.id] ?? 0) }
-                        groupCard(title: g.name, sum: sum, items: items, balances: balances)
-                    }
-                }
-                let orphans = accounts.filter { s.groups[$0.groupId] == nil }
-                if !orphans.isEmpty {
-                    groupCard(title: "Other", sum: orphans.reduce(0) { $0 + (balances[$1.id] ?? 0) }, items: orphans, balances: balances)
-                }
-                if accounts.isEmpty {
-                    EmptyStateView(title: "No accounts", symbol: "creditcard", message: "Add an account to start tracking balances.")
-                        .frame(height: 260)
-                }
-                if s.accounts.values.contains(where: \.hidden) {
-                    Toggle("Show hidden accounts", isOn: $showHidden).toggleStyle(.checkbox)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .readableWidth()
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
-        }
-        .pageBackground()
-    }
-
-    private func groupCard(title: String, sum: Double, items: [Account], balances: [String: Double]) -> some View {
+        let visible = s.sortedAccounts.filter { !$0.hidden }
+        let hidden = s.sortedAccounts.filter(\.hidden)
         VStack(spacing: 0) {
-            HStack {
-                Text(title).font(.headline)
-                Spacer()
-                Text(model.money(sum)).font(.money(13, weight: .medium)).foregroundStyle(sum < 0 ? Palette.expense : .secondary)
+            VStack(spacing: 0) {
+                MBHeader(title: "Accounts") {
+                    EmptyView()
+                } right: {
+                    IconButton(symbol: "pencil", help: "Edit accounts") { model.open(.accountsAdmin) }
+                    IconButton(symbol: "plus", help: "Add account") { editing = AccountEditRequest() }
+                }
+                Strip(items: [("Assets", summary.assets, MB.inc), ("Liabilities", summary.liabilities, MB.exp), ("Total", summary.total, MB.fg)])
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 11)
-            Divider()
-            ForEach(Array(items.enumerated()), id: \.element.id) { i, a in
-                if i > 0 { Divider().padding(.leading, 62) }
-                NavigationLink(value: a.id) {
-                    AccountCardRow(account: a, balance: balances[a.id] ?? 0, symbol: groupSymbol(title))
+            .background(MB.chrome)
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(s.sortedGroups) { g in
+                        let items = visible.filter { $0.groupId == g.id }
+                        if !items.isEmpty {
+                            let sum = items.reduce(0) { $0 + (balances[$1.id] ?? 0) }
+                            groupHeader(g.name, sum: sum)
+                            ForEach(items) { row($0, balance: balances[$0.id] ?? 0) }
+                        }
+                    }
+                    if !hidden.isEmpty {
+                        groupHeader("Hidden", sum: nil)
+                        ForEach(hidden) { row($0, balance: balances[$0.id] ?? 0, muted: true) }
+                    }
+                    if s.accounts.isEmpty { MBEmpty(text: "No accounts", emoji: "💳") }
                 }
-                .buttonStyle(.plain)
-                .contextMenu {
-                    Button("Edit…") { editing = AccountEditRequest(accountId: a.id) }
-                    Button("Delete…", role: .destructive) { pendingDelete = a }
-                }
+                .padding(.bottom, 40)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: Surface.radius, style: .continuous))
-        .card(padding: 0)
+        .sheet(item: $editing) { AccountEditor(request: $0) }
     }
 
-    private func groupSymbol(_ name: String) -> String {
-        let n = name.lowercased()
-        if n.contains("cash") { return "banknote" }
-        if n.contains("card") || n.contains("credit") || n.contains("debit") { return "creditcard" }
-        if n.contains("saving") || n.contains("invest") { return "chart.line.uptrend.xyaxis" }
-        if n.contains("loan") || n.contains("debt") { return "arrow.uturn.left" }
-        if n.contains("insur") { return "umbrella" }
-        return "building.columns"
-    }
-}
-
-/// An account inside a group card: glyph, name, note, balance and a chevron; highlights on hover.
-private struct AccountCardRow: View {
-    @Environment(AppModel.self) private var model
-    var account: Account
-    var balance: Double
-    var symbol: String
-    @UIState private var hovering = false
-
-    var body: some View {
-        let a = account
-        HStack(spacing: 12) {
-            Image(systemName: symbol)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(balance < 0 ? Palette.expense : Color.accentColor)
-                .frame(width: 36, height: 36)
-                .background((balance < 0 ? Palette.expense : Color.accentColor).opacity(0.12), in: Circle())
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(a.name).font(.body.weight(.medium))
-                    if a.hidden { Image(systemName: "eye.slash").font(.caption).foregroundStyle(.secondary) }
-                    if !a.includeInTotals { Text("excluded").font(.caption2).foregroundStyle(.secondary) }
-                }
-                if !a.note.isEmpty { Text(a.note).font(.caption).foregroundStyle(.secondary) }
-            }
+    private func groupHeader(_ name: String, sum: Double?) -> some View {
+        HStack(alignment: .lastTextBaseline) {
+            Text(name).font(.system(size: 14)).foregroundStyle(MB.fg2)
             Spacer()
-            Text(model.money(balance)).font(.money(14)).foregroundStyle(balance < 0 ? Palette.expense : .primary)
-            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            if let sum { Text(model.money(sum)).font(.system(size: 14.5).monospacedDigit()).foregroundStyle(sum < 0 ? MB.exp : MB.inc) }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .background(hovering ? Surface.hover : Color.clear)
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .opacity(a.hidden ? 0.6 : 1)
-    }
-}
-
-private extension AccountsView {
-    private func headerCell(_ title: String, _ value: Double, _ color: Color) -> some View {
-        VStack(spacing: 3) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(model.money(value)).font(.title3.weight(.semibold).monospacedDigit()).foregroundStyle(color)
-        }
-        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.top, 16)
+        .padding(.bottom, 8)
+        .background(MB.bg2)
+        .bottomLine()
     }
 
-    private func accountRow(_ a: Account, balance: Double) -> some View {
+    private func row(_ a: Account, balance: Double, muted: Bool = false) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(a.name).font(.body.weight(.medium))
-                    if a.hidden { Image(systemName: "eye.slash").font(.caption).foregroundStyle(.secondary) }
-                    if !a.includeInTotals { Text("excluded").font(.caption2).foregroundStyle(.secondary) }
-                }
-                if !a.note.isEmpty { Text(a.note).font(.caption).foregroundStyle(.secondary) }
-            }
+            Text(a.name).foregroundStyle(muted ? MB.fg2 : MB.fg)
+            if !a.includeInTotals { Text("(excluded)").font(.system(size: 12)).foregroundStyle(MB.fg2) }
             Spacer()
-            Text(model.money(balance)).font(.body.monospacedDigit()).foregroundStyle(balance < 0 ? Palette.expense : Palette.income)
+            Text(model.money(balance)).monospacedDigit().foregroundStyle(muted ? MB.fg2 : balance < 0 ? MB.exp : MB.inc)
         }
-        .padding(.vertical, 3)
-        .opacity(a.hidden ? 0.6 : 1)
+        .font(.system(size: 15))
+        .padding(.horizontal, 24)
+        .frame(minHeight: 52)
+        .bottomLine()
+        .rowHover()
+        .onTapGesture { model.open(.account(a.id)) }
+        .contextMenu {
+            Button("Edit Account…") { editing = AccountEditRequest(accountId: a.id) }
+        }
     }
 }
 
-/// An account's transactions with the running balance after each one.
+/// One account's month: Deposit / Withdrawal / Balance and its day list, with an Add button.
 struct AccountDetailView: View {
     @Environment(AppModel.self) private var model
     var accountId: String
-    var onEdit: (String) -> Void
-    @UIState private var allTime = false
-    @UIState private var selection = Set<String>()
-    @UIState private var pendingDelete: [String] = []
+    @UIState private var month: YearMonth?
+    @UIState private var editing: AccountEditRequest?
 
     var body: some View {
         let s = model.snapshot
-        if let account = s.accounts[accountId] {
-            let running = Ledger.runningBalances(accountId: accountId, s)
-            let all = s.transactions.values.filter { $0.accountId == accountId || $0.toAccountId == accountId }
-            let txs = (allTime ? all : all.filter { model.period.contains($0.date) }).sorted(by: Ledger.sortDescending)
-            let inflow = txs.reduce(0) { $0 + max(Ledger.delta($1, for: accountId), 0) }
-            let outflow = txs.reduce(0) { $0 + max(-Ledger.delta($1, for: accountId), 0) }
-            let balance = Ledger.balances(s)[accountId] ?? 0
-            ScrollView {
-            VStack(spacing: 14) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("\(account.name) · \(s.groups[account.groupId]?.name ?? "")").font(.callout.weight(.medium)).foregroundStyle(.secondary)
-                        Text(model.money(balance)).font(.money(30, weight: .bold))
-                            .foregroundStyle(balance < 0 ? Palette.expense : .primary)
-                        Text("Current balance").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 6) {
-                        Picker("", selection: $allTime) {
-                            Text(Fmt.monthTitle(model.month)).tag(false)
-                            Text("All time").tag(true)
-                        }
-                        .pickerStyle(.segmented).labelsHidden().frame(width: 240)
-                        HStack(spacing: 14) {
-                            Label(model.money(inflow), systemImage: "arrow.down.left").foregroundStyle(Palette.income)
-                            Label(model.money(outflow), systemImage: "arrow.up.right").foregroundStyle(Palette.expense)
-                        }
-                        .font(.callout.monospacedDigit())
-                    }
+        let ym = month ?? model.month
+        let p = Periods.month(ym, startDay: s.monthStartDay)
+        let txs = Ledger.transactions(in: p, s).filter { $0.accountId == accountId || $0.toAccountId == accountId }
+        let deposit = txs.reduce(0) { $0 + ($1.type == .income || ($1.type == .transfer && $1.toAccountId == accountId) ? $1.amount : 0) }
+        let withdrawal = txs.reduce(0) { $0 + ($1.type == .income || ($1.type == .transfer && $1.toAccountId == accountId) ? 0 : $1.amount) }
+        let balance = Ledger.balances(s)[accountId] ?? 0
+        ZStack(alignment: .bottomTrailing) {
+            VStack(spacing: 0) {
+                DrawerHeader(title: s.accounts[accountId]?.name ?? "Deleted account") {
+                    HeaderTextButton(title: "Edit") { editing = AccountEditRequest(accountId: accountId) }
                 }
-                .card(padding: 18)
-
-                if txs.isEmpty {
-                    EmptyStateView(title: "No transactions", symbol: "tray", message: allTime ? "This account has no transactions yet." : "Nothing in \(Fmt.monthTitle(model.month)).")
-                        .frame(height: 260)
-                } else {
-                    VStack(spacing: 0) {
-                        TransactionCardRows(transactions: txs, selection: $selection, pendingDelete: $pendingDelete,
-                                            trailingDetail: { tx in running[tx.id].map { "Bal. " + model.money($0) } }, showDate: true)
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: Surface.radius, style: .continuous))
-                    .card(padding: 0)
+                MonthSwitcher(label: Fmt.monthLabel(ym), onPrev: { month = ym.adding(months: -1) }, onNext: { month = ym.adding(months: 1) },
+                              onLabel: { month = model.currentMonth })
+                Strip(items: [("Deposit", deposit, MB.inc), ("Withdrawal", withdrawal, MB.exp), ("Balance", balance, balance < 0 ? MB.exp : MB.fg)])
+                ScrollView {
+                    DayList(transactions: txs, accountId: accountId, addable: true, emptyText: "No transactions in \(Fmt.monthLabel(ym))", categoryWidth: 96)
+                        .padding(.bottom, 90)
                 }
             }
-            .readableWidth()
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            Button {
+                let current = ym == model.currentMonth
+                model.newTransaction(day: current ? nil : p.from, accountId: accountId)
+            } label: {
+                Image(systemName: "plus").font(.system(size: 24, weight: .regular)).foregroundStyle(.white)
+                    .frame(width: 56, height: 56)
+                    .background(MB.accent, in: Circle())
+                    .shadow(color: MB.accent.opacity(0.35), radius: 4, y: 3)
             }
-            .pageBackground()
-            .transactionKeyboard(selection: $selection, pendingDelete: $pendingDelete)
-            .navigationTitle(account.name)
-            .toolbar {
-                ToolbarItem {
-                    Button { onEdit(accountId) } label: { Label("Edit Account", systemImage: "pencil") }
-                }
-            }
-        } else {
-            EmptyStateView(title: "Account deleted", symbol: "creditcard.trianglebadge.exclamationmark", message: "This account no longer exists.")
+            .buttonStyle(.plain)
+            .help("Add a transaction to this account")
+            .padding(18)
         }
+        .sheet(item: $editing) { AccountEditor(request: $0) }
     }
 }
 

@@ -36,6 +36,7 @@ struct MoneybookApp: App {
                 .frame(minWidth: 860, minHeight: 560)
         }
         .defaultSize(width: 1200, height: 780)
+        .windowStyle(.hiddenTitleBar)
         .commands { MoneybookCommands(model: model) }
 
         Settings {

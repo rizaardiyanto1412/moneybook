@@ -10,11 +10,39 @@ typealias UIState = SwiftUI.State
 typealias Transaction = MoneybookCore.Transaction
 typealias Category = MoneybookCore.Category
 
+/// The web app's colours (web/styles.css `:root`), light and dark.
+enum MB {
+    static let accent = Palette.dynamic(0xff6254, 0xff6254)
+    static let accentPress = Palette.dynamic(0xf04c3e, 0xf04c3e)
+    static let inc = Palette.dynamic(0x1f88ff, 0x3a95ff)
+    static let exp = Palette.dynamic(0xff603b, 0xff6a4a)
+    static let xfer = Palette.dynamic(0x4b4b4b, 0x8a8a8e)
+    static let bg = Palette.dynamic(0xffffff, 0x1c1c1e)
+    static let bg2 = Palette.dynamic(0xf7f7fa, 0x111112)
+    static let fg = Palette.dynamic(0x000000, 0xffffff)
+    static let fgNote = Palette.dynamic(0x4b4b4b, 0xe2e2e4)
+    static let fg2 = Palette.dynamic(0x7b7b7b, 0x9a9a9e)
+    static let fg3 = Palette.dynamic(0x8d8d8d, 0x6e6e73)
+    static let chip = Palette.dynamic(0x8d8d8d, 0x5a5a5e)
+    static let line = Palette.dynamic(0xd5d5d5, 0x2c2c2e)
+    static let today = Palette.dynamic(0x3f4671, 0x5b64a8)
+    static let chrome = Palette.dynamic(0xffffff, 0x2a2a2d)
+    static let sat = Palette.dynamic(0x58a6ff, 0x3a95ff)
+    static let sun = Palette.dynamic(0xff796e, 0xff6a4a)
+    /// Window background around the centred panes.
+    static let desk = Palette.dynamic(0xf7f7fa, 0x0b0b0c)
+    static let overlay = Palette.dynamic(0x000000, 0x000000).opacity(0.35)
+    /// Money Manager's pie colours, in slice order.
+    static let chart: [Color] = [0xfd6e63, 0xff9750, 0xfed042, 0xfee700, 0xc1e746, 0x72d36c, 0x66e9db, 0x72b8e3, 0xa588d6, 0xed7ddc, 0xe373a2]
+        .map { Palette.dynamic($0, $0) }
+    static func chartColor(_ i: Int) -> Color { chart[i % chart.count] }
+}
+
 /// Money Manager's colour language.
 enum Palette {
-    static let income = Color(red: 0.20, green: 0.48, blue: 0.92)
-    static let expense = Color(red: 0.94, green: 0.36, blue: 0.32)
-    static let transfer = Color.secondary
+    static let income = MB.inc
+    static let expense = MB.exp
+    static let transfer = MB.xfer
     static let ai = Color(red: 0.62, green: 0.38, blue: 0.95)
 
     static func color(_ type: TxType) -> Color {
@@ -51,6 +79,7 @@ enum Fmt {
         return f
     }
     private static let monthYear = formatter("MMMMyyyy")
+    private static let monthYearShort = formatter("MMMyyyy")
     private static let monthShort = formatter("MMM")
     private static let monthLong = formatter("MMMM")
     private static let weekdayShort = formatter("EEE")
@@ -60,6 +89,13 @@ enum Fmt {
     private static let monthDot = formatter("MMyyyy")
 
     static func monthTitle(_ ym: YearMonth) -> String { date(ym).map(monthYear.string(from:)) ?? ym.key }
+    /// "Oct 2026", like the web app's month switcher.
+    static func monthLabel(_ ym: YearMonth) -> String { date(ym).map(monthYearShort.string(from:)) ?? ym.key }
+    /// "10/1 ~ 10/31"
+    static func shortRange(_ p: Period) -> String {
+        func md(_ d: String) -> String { "\(Int(d.dropFirst(5).prefix(2)) ?? 0)/\(Int(d.suffix(2)) ?? 0)" }
+        return "\(md(p.from)) ~ \(md(p.to))"
+    }
     static func monthName(_ ym: YearMonth, short: Bool = false) -> String { date(ym).map((short ? monthShort : monthLong).string(from:)) ?? ym.key }
     static func weekday(_ day: String) -> String { Periods.date(day).map(weekdayShort.string(from:)) ?? "" }
     static func weekdayLong(_ day: String) -> String { Periods.date(day).map(weekdayFull.string(from:)) ?? "" }
@@ -73,18 +109,6 @@ enum Fmt {
 }
 
 // MARK: - Small components
-
-struct AmountText: View {
-    var amount: Double
-    var type: TxType
-    var currency: String
-    var font: Font = .body
-    var body: some View {
-        Text(Money.format(amount, currency: currency))
-            .font(font.monospacedDigit())
-            .foregroundStyle(Palette.color(type))
-    }
-}
 
 struct CategoryIcon: View {
     var icon: String
@@ -113,69 +137,6 @@ struct AISparkle: View {
     }
 }
 
-/// Income / Expenses / Balance hero cards shown above transaction lists.
-struct TotalsStrip: View {
-    var totals: Totals
-    var currency: String
-    var body: some View {
-        HStack(spacing: 12) {
-            StatCard(title: "Income", value: Money.format(totals.income, currency: currency), symbol: "arrow.down.left", tint: Palette.income)
-            StatCard(title: "Expenses", value: Money.format(totals.expense, currency: currency), symbol: "arrow.up.right", tint: Palette.expense,
-                     footnote: totals.income > 0 ? String(format: "%.0f%% of income", totals.expense / totals.income * 100) : nil,
-                     ratio: totals.income > 0 ? totals.expense / totals.income : nil)
-            StatCard(title: "Balance", value: Money.format(totals.total, currency: currency), symbol: "equal",
-                     tint: totals.total < 0 ? Palette.expense : .accentColor, valueColor: .primary)
-        }
-    }
-}
-
-/// A single figure on a card: tinted glyph, caption, big rounded number, optional ratio bar.
-struct StatCard: View {
-    var title: String
-    var value: String
-    var symbol: String
-    var tint: Color
-    var valueColor: Color?
-    var footnote: String?
-    var ratio: Double?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 7) {
-                Image(systemName: symbol)
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(tint)
-                    .frame(width: 20, height: 20)
-                    .background(tint.opacity(0.14), in: Circle())
-                Text(title).font(.callout.weight(.medium)).foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                if let footnote { Text(footnote).font(.caption).foregroundStyle(.tertiary) }
-            }
-            Text(value)
-                .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
-                .foregroundStyle(valueColor ?? tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-            if let ratio {
-                ProgressBar(ratio: ratio, tint: ratio > 1 ? Palette.expense : tint.opacity(0.8), height: 4)
-            } else {
-                Color.clear.frame(height: 4)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card(padding: 14)
-    }
-}
-
-struct EmptyStateView: View {
-    var title: String
-    var symbol: String
-    var message: String
-    var body: some View {
-        ContentUnavailableView(title, systemImage: symbol, description: Text(message))
-    }
-}
-
 struct ProgressBar: View {
     var ratio: Double
     var tint: Color
@@ -191,39 +152,9 @@ struct ProgressBar: View {
     }
 }
 
-enum Surface {
-    /// Soft page colour the cards sit on.
-    static let page = Palette.dynamic(0xf3f3f6, 0x1c1c1f)
-    static let card = Palette.dynamic(0xffffff, 0x2a2a2e)
-    static let hover = Color.primary.opacity(0.045)
-    static let radius: CGFloat = 14
-    /// Readable width for list-style pages; wider windows get margins instead of stretched rows.
-    static let contentWidth: CGFloat = 880
-}
-
 extension Font {
     /// Rounded figures for money.
     static func money(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
         .system(size: size, weight: weight, design: .rounded).monospacedDigit()
-    }
-}
-
-extension View {
-    /// Card styling used across dashboards.
-    func card(padding: CGFloat = 14) -> some View {
-        self.padding(padding)
-            .background(Surface.card, in: RoundedRectangle(cornerRadius: Surface.radius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Surface.radius, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
-            .shadow(color: .black.opacity(0.05), radius: 3, y: 1)
-    }
-
-    /// Page background behind cards.
-    func pageBackground() -> some View {
-        background(Surface.page)
-    }
-
-    /// Centers content at a readable width.
-    func readableWidth(_ width: CGFloat = Surface.contentWidth) -> some View {
-        frame(maxWidth: width).frame(maxWidth: .infinity)
     }
 }

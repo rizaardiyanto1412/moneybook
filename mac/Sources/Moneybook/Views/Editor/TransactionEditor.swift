@@ -1,89 +1,70 @@
+import AppKit
 import MoneybookCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The entry form, laid out like the web app (web/js/views/entry.js): Date, Amount, Category, Account,
+/// Note, Description, with Money Manager's docked panel (calculator keypad, category and account grids).
 struct TransactionEditor: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
     var request: EditorRequest
 
-    enum Field: Hashable { case amount, note, memo }
+    enum Panel: Hashable { case amount, category, account, to }
+    enum Field: Hashable { case note, memo }
 
     @UIState private var type: TxType = .expense
     @UIState private var date = Date()
-    @UIState private var amountText = ""
+    @UIState private var amount = ""
     @UIState private var accountId: String?
     @UIState private var toAccountId: String?
     @UIState private var categoryId: String?
-    @UIState private var expandedParent: String?
+    @UIState private var openParent: String?
     @UIState private var note = ""
     @UIState private var memo = ""
     @UIState private var existingReceipt: String?
     @UIState private var pendingReceipt: PendingReceipt?
     @UIState private var removeReceipt = false
     @UIState private var showLargeReceipt = false
+    @UIState private var panel: Panel?
+    @UIState private var showDate = false
     @UIState private var saving = false
     @UIState private var error: String?
     @UIState private var savedCount = 0
     @UIState private var confirmDelete = false
     @UIState private var dropTargeted = false
     @FocusState private var focus: Field?
+    @FocusState private var keypadFocused: Bool
 
     private var isEditing: Bool { request.transactionId != nil }
     private var existing: Transaction? { request.transactionId.flatMap { model.snapshot.transactions[$0] } }
+    private var tint: Color { type == .income ? MB.inc : type == .expense ? MB.exp : MB.fg }
+    private var digits: Int { Money.fractionDigits(Money.normalizedCode(model.currency)) }
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            amountHero
-            Form {
-                if type == .transfer {
-                    Section {
-                        accountPicker("From", $accountId)
-                        HStack {
-                            accountPicker("To", $toAccountId)
-                            Button { swap(&accountId, &toAccountId) } label: { Image(systemName: "arrow.up.arrow.down") }
-                                .buttonStyle(.borderless)
-                                .help("Swap From and To")
-                        }
+            DrawerHeader(title: type.label, back: "Trans.", onBack: close)
+            typeSegment
+            ScrollView {
+                VStack(spacing: 0) {
+                    form
+                    if let error {
+                        Text(error).font(.system(size: 14)).foregroundStyle(MB.exp).padding(.horizontal, 16).padding(.top, 12)
                     }
-                } else {
-                    Section("Category") {
-                        CategoryGrid(type: type == .income ? .income : .expense, selection: $categoryId, expandedParent: $expandedParent)
-                            .padding(.vertical, 4)
+                    if savedCount > 0 {
+                        Text("✓ \(savedCount) saved — add another").font(.system(size: 14)).foregroundStyle(.green).padding(.top, 12)
                     }
-                }
-                Section {
-                    HStack {
-                        DatePicker("Date", selection: $date, displayedComponents: [.date, .hourAndMinute])
-                            .datePickerStyle(.field)
-                        Button("Now") { date = Date() }.buttonStyle(.link).font(.caption)
-                    }
-                    if type != .transfer {
-                        accountPicker("Account", $accountId)
-                    }
-                    TextField("Note", text: $note, prompt: Text("e.g. Starbucks"))
-                        .focused($focus, equals: .note)
-                    TextField("Description", text: $memo, prompt: Text("Optional"), axis: .vertical)
-                        .lineLimit(2...5)
-                        .focused($focus, equals: .memo)
-                }
-                Section("Receipt") {
-                    receiptField
+                    actions
                 }
             }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-            if let error {
-                Text(error).font(.callout).foregroundStyle(Palette.expense).padding(.horizontal, 20).padding(.bottom, 6)
-            }
-            footer
+            if let panel { inputPanel(panel) }
         }
-        .frame(width: 580, height: type == .transfer ? 560 : 740)
-        .background(Surface.page)
+        .focusable()
+        .focused($keypadFocused)
+        .focusEffectDisabled()
+        .onKeyPress(phases: .down) { press in keyboard(press) }
         .overlay {
             if dropTargeted {
-                RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
+                RoundedRectangle(cornerRadius: 10).strokeBorder(MB.accent, style: StrokeStyle(lineWidth: 3, dash: [8]))
                     .padding(4).allowsHitTesting(false)
             }
         }
@@ -92,223 +73,449 @@ struct TransactionEditor: View {
             return true
         }
         .onAppear(perform: load)
+        .onChange(of: focus) { if focus != nil { panel = nil } }
         .sheet(isPresented: $showLargeReceipt) {
             ReceiptViewer(image: pendingReceipt?.image, key: removeReceipt ? nil : existingReceipt)
         }
         .confirmationDialog("Delete this transaction?", isPresented: $confirmDelete) {
             Button("Delete", role: .destructive) {
-                if let id = request.transactionId {
-                    Task { await model.delete(transactionIds: [id]) }
-                }
-                dismiss()
+                if let id = request.transactionId { Task { await model.delete(transactionIds: [id]) } }
+                close()
             }
         }
     }
 
-    // MARK: Sections
+    private func close() { model.editor = nil }
 
-    private var amountHero: some View {
-        VStack(spacing: 6) {
-            Text(type == .transfer ? "Amount to move" : type == .income ? "Amount received" : "Amount spent")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(Money.symbol(model.currency))
-                    .font(.system(size: 22, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Palette.color(type).opacity(0.7))
-                TextField("", text: $amountText, prompt: Text("0").foregroundStyle(.quaternary))
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 40, weight: .bold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(type == .transfer ? Color.primary : Palette.color(type))
-                    .multilineTextAlignment(.center)
-                    .fixedSize()
-                    .frame(minWidth: 80)
-                    .focused($focus, equals: .amount)
-                    .onSubmit { focus = .note }
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 14)
-        .padding(.bottom, 2)
-    }
+    // MARK: Form
 
-    private var header: some View {
-        HStack(spacing: 0) {
+    /// `.typeseg`: Income / Expense / Transfer outlined in the type's colour.
+    private var typeSegment: some View {
+        HStack(spacing: 8) {
             ForEach(TxType.allCases) { t in
+                let on = t == type
+                let c: Color = t == .income ? MB.inc : t == .expense ? MB.exp : MB.fg
                 Button { switchType(t) } label: {
                     Text(t.label)
-                        .font(.body.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                        .foregroundStyle(type == t ? Color.white : .secondary)
-                        .background(type == t ? tabColor(t) : Color.clear, in: Capsule())
+                        .font(.system(size: 15))
+                        .foregroundStyle(on ? c : MB.fg2)
+                        .frame(maxWidth: .infinity, minHeight: 34)
+                        .background(on ? MB.bg : MB.bg2, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(on ? c : MB.line, lineWidth: 1))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(3)
-        .background(Color.primary.opacity(0.07), in: Capsule())
-        .padding(.horizontal, 20)
-        .padding(.top, 18)
-        .padding(.bottom, 4)
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, 10)
+        .background(MB.chrome)
     }
 
-    private var footer: some View {
-        HStack {
-            if isEditing {
-                Button("Delete", role: .destructive) { confirmDelete = true }
-            }
-            if savedCount > 0 {
-                Label("\(savedCount) saved", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green).font(.callout)
-                    .transition(.opacity)
-            }
-            Spacer()
-            Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-            if !isEditing {
-                Button("Continue") { Task { await save(continuing: true) } }
-                    .keyboardShortcut(.return, modifiers: [.command, .shift])
-                    .help("Save and start another (⇧⌘↩)")
-                    .disabled(saving)
-            }
-            Button("Save") { Task { await save(continuing: false) } }
-                .keyboardShortcut(.return, modifiers: .command)
-                .buttonStyle(.borderedProminent)
-                .tint(tabColor(type))
-                .help("Save (⌘↩)")
-                .disabled(saving)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-        .background(.bar)
-        .overlay(alignment: .top) { Divider() }
-    }
-
-    /// Solid colour for a type (transfer uses a real grey so white text stays legible).
-    private func tabColor(_ t: TxType) -> Color { t == .transfer ? Color(nsColor: .systemGray) : Palette.color(t) }
-
-    private func label(_ text: String) -> some View {
-        Text(text).foregroundStyle(.secondary).frame(width: 84, alignment: .trailing)
-    }
-
-    private func accountPicker(_ title: String, _ binding: Binding<String?>) -> some View {
+    private var form: some View {
         let s = model.snapshot
-        let accounts = s.sortedAccounts.filter { !$0.hidden || $0.id == binding.wrappedValue }
-        return Picker(title, selection: binding) {
-            Text("Choose…").tag(String?.none)
-            ForEach(s.sortedGroups) { g in
-                let items = accounts.filter { $0.groupId == g.id }
-                if !items.isEmpty {
-                    Section(g.name) {
-                        ForEach(items) { Text($0.name).tag(Optional($0.id)) }
+        let cat = s.categories[categoryId ?? ""]
+        let parent = cat?.parentId.flatMap { s.categories[$0] }
+        let catLabel = cat.map { (parent.map { "\($0.name)/" } ?? "") + $0.name } ?? ""
+        return VStack(spacing: 0) {
+            field("Date") {
+                Button { showDate.toggle() } label: {
+                    HStack(spacing: 18) {
+                        Text(mmDate)
+                        Text(mmTime)
                     }
+                    .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showDate, arrowEdge: .bottom) {
+                    VStack(alignment: .trailing, spacing: 8) {
+                        DatePicker("", selection: $date, displayedComponents: [.date]).datePickerStyle(.graphical).labelsHidden()
+                        HStack {
+                            DatePicker("Time", selection: $date, displayedComponents: [.hourAndMinute]).datePickerStyle(.field)
+                            Button("Now") { date = Date() }
+                        }
+                    }
+                    .padding(12)
                 }
             }
+            pickField("Amount", .amount) {
+                Text(Money.symbol(model.currency)).padding(.trailing, 6)
+                Text(Self.grouped(amount)).monospacedDigit()
+            }
+            if type != .transfer {
+                pickField("Category", .category) { Text(catLabel) }
+            }
+            pickField(type == .transfer ? "From" : "Account", .account) { Text(s.accounts[accountId ?? ""]?.name ?? "") }
+            if type == .transfer {
+                pickField("To", .to) { Text(s.accounts[toAccountId ?? ""]?.name ?? "") }
+            }
+            field("Note") {
+                TextField("", text: $note)
+                    .textFieldStyle(.plain)
+                    .focused($focus, equals: .note)
+                    .frame(minHeight: 50)
+                    .onSubmit { Task { await save(continuing: false) } }
+            } underline: { focus == .note }
+            MB.bg2.frame(height: 10)
+                .overlay(alignment: .top) { MB.line.frame(height: 1) }
+                .bottomLine()
+                .padding(.top, 16)
+            HStack(alignment: .top, spacing: 10) {
+                TextField("Description", text: $memo, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...8)
+                    .focused($focus, equals: .memo)
+                    .padding(.vertical, 13)
+                Button(action: chooseReceipt) {
+                    Image(systemName: "camera").font(.system(size: 20, weight: .light)).foregroundStyle(Color(white: 0.49))
+                        .frame(width: 40, height: 46).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Attach a receipt photo (or drop one here)")
+            }
+            .font(.system(size: 16))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
+            .bottomLine()
+            receiptRow
         }
     }
 
-    @ViewBuilder private var receiptField: some View {
-        let hasImage = pendingReceipt != nil || (existingReceipt != nil && !removeReceipt)
-        HStack(alignment: .top, spacing: 12) {
-            Button { if hasImage { showLargeReceipt = true } else { chooseReceipt() } } label: {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08))
-                    RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: hasImage ? [] : [4]))
-                    if let img = pendingReceipt?.image {
-                        Image(nsImage: img).resizable().scaledToFill().clipShape(RoundedRectangle(cornerRadius: 8))
-                    } else if let key = existingReceipt, !removeReceipt {
-                        ReceiptThumbnail(key: key)
-                    } else {
-                        VStack(spacing: 4) {
-                            Image(systemName: "photo.badge.plus").font(.title2)
-                            Text("Drop photo").font(.caption2)
-                        }
-                        .foregroundStyle(.secondary)
-                    }
+    private func field<Content: View>(_ label: String, @ViewBuilder content: () -> Content, underline: () -> Bool = { false }) -> some View {
+        let focused = underline()
+        return HStack(spacing: 0) {
+            Text(label).font(.system(size: 15)).foregroundStyle(Color(white: 0.455)).frame(width: 76, alignment: .leading)
+            content()
+                .font(.system(size: 16))
+                .foregroundStyle(MB.fg)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: .bottom) {
+                    (focused ? tint : MB.line).frame(height: focused ? 2 : 1)
                 }
-                .frame(width: 84, height: 84)
-                .contentShape(Rectangle())
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func pickField<Content: View>(_ label: String, _ kind: Panel, @ViewBuilder content: () -> Content) -> some View {
+        field(label) {
+            Button { showPanel(kind) } label: {
+                HStack(spacing: 0) { content() }
+                    .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(hasImage ? "Click to view" : "Drop an image here or click to choose")
-            VStack(alignment: .leading, spacing: 6) {
-                Button(hasImage ? "Replace…" : "Choose…") { chooseReceipt() }
-                if hasImage {
-                    Button("Remove", role: .destructive) {
+        } underline: { panel == kind }
+    }
+
+    @ViewBuilder private var receiptRow: some View {
+        let hasImage = pendingReceipt != nil || (existingReceipt != nil && !removeReceipt)
+        if hasImage {
+            HStack {
+                ZStack(alignment: .topTrailing) {
+                    Group {
+                        if let img = pendingReceipt?.image {
+                            Image(nsImage: img).resizable().scaledToFill()
+                        } else if let key = existingReceipt {
+                            ReceiptThumbnail(key: key)
+                        }
+                    }
+                    .frame(width: 64, height: 64)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .onTapGesture { showLargeReceipt = true }
+                    Button {
                         pendingReceipt = nil
                         if existingReceipt != nil { removeReceipt = true }
+                    } label: {
+                        Text("✕").font(.system(size: 13)).foregroundStyle(.white)
+                            .frame(width: 22, height: 22).background(Color.black.opacity(0.6), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(3)
+                    .help("Remove photo")
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+        }
+    }
+
+    /// `.form-actions`: Save + Continue for a new entry; Save, Delete, Copy when editing.
+    @ViewBuilder private var actions: some View {
+        Group {
+            if isEditing {
+                VStack(spacing: 7) {
+                    MBButton(title: "Save", primary: true, tint: MB.accent) { Task { await save(continuing: false) } }
+                    HStack(spacing: 7) {
+                        MBButton(title: "Delete", symbol: "trash") { confirmDelete = true }
+                        MBButton(title: "Copy", symbol: "doc.on.doc") {
+                            if let id = request.transactionId { model.duplicate(id) }
+                            close()
+                        }
                     }
                 }
-                if pendingReceipt != nil { Text("Uploads when you save").font(.caption).foregroundStyle(.secondary) }
+            } else {
+                HStack(spacing: 7) {
+                    MBButton(title: "Save", primary: true, tint: MB.accent) { Task { await save(continuing: false) } }
+                        .frame(maxWidth: .infinity)
+                        .layoutPriority(1.6)
+                    MBButton(title: "Continue") { Task { await save(continuing: true) } }
+                        .frame(width: 160)
+                        .help("Save and add another (⇧⌘↩)")
+                }
+            }
+        }
+        .disabled(saving)
+        .padding(.horizontal, 15)
+        .padding(.top, 35)
+        .padding(.bottom, 16)
+        .background {
+            Button("") { Task { await save(continuing: false) } }.keyboardShortcut(.return, modifiers: .command).hidden()
+            Button("") { Task { await save(continuing: !isEditing) } }.keyboardShortcut(.return, modifiers: [.command, .shift]).hidden()
+        }
+    }
+
+    // MARK: Docked input panel
+
+    private func inputPanel(_ kind: Panel) -> some View {
+        let title = kind == .amount ? "Amount" : kind == .category ? "Category" : "Accounts"
+        return VStack(spacing: 0) {
+            HStack {
+                Text(title).font(.system(size: 16))
+                Spacer()
+                Button { panel = nil } label: {
+                    Image(systemName: "xmark").font(.system(size: 15)).frame(width: 51, height: 42).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Close")
+            }
+            .padding(.leading, 20)
+            .frame(height: 42)
+            .foregroundStyle(Palette.dynamic(0xffffff, 0x232428))
+            .background(Palette.dynamic(0x000000, 0x808186))
+            Group {
+                switch kind {
+                case .amount: keypad
+                case .category: categoryPanel
+                case .account: accountPanel(selected: accountId, exclude: nil)
+                case .to: accountPanel(selected: toAccountId, exclude: accountId)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(height: 366)
+        .background(MB.bg2)
+        .shadow(color: .black.opacity(0.08), radius: 5, y: -2)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private static let keypadRows: [[String]] = [["+", "-", "×", "÷"], ["7", "8", "9", "="], ["4", "5", "6", "."], ["1", "2", "3", "back"], ["", "0", "", "done"]]
+
+    private var keypad: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(Self.keypadRows.enumerated()), id: \.offset) { r, row in
+                HStack(spacing: 0) {
+                    ForEach(Array(row.enumerated()), id: \.offset) { c, k in
+                        KeypadKey(key: k, top: r == 0, disabled: k == "." && digits == 0, last: c == 3) { typeKey(k) }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var categoryPanel: some View {
+        let s = model.snapshot
+        let kind: CategoryType = type == .income ? .income : .expense
+        let tops = s.topCategories(kind)
+        let selTop = s.rootCategory(categoryId)?.id
+        if tops.isEmpty {
+            MBEmpty(text: "No categories yet — add some in Settings.", emoji: "🗂️")
+        } else if !tops.contains(where: { !s.subcategories(of: $0.id).isEmpty }) {
+            PickGrid(items: tops.map { ($0.id, $0.name) }, selected: selTop, tint: tint) { pick(.category, $0) }
+        } else {
+            let parent = tops.first { $0.id == (openParent ?? selTop) }
+            HStack(spacing: 0) {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(tops) { c in
+                            let hasSubs = !s.subcategories(of: c.id).isEmpty
+                            PickRow(title: c.name, chevron: hasSubs, on: parent?.id == c.id, tint: tint) {
+                                if hasSubs { openParent = c.id } else { pick(.category, c.id) }
+                            }
+                        }
+                    }
+                }
+                .background(MB.bg)
+                .overlay(alignment: .trailing) { MB.line.frame(width: 1) }
+                ScrollView {
+                    VStack(spacing: 0) {
+                        if let parent {
+                            PickRow(title: parent.name, suffix: "(all)", on: categoryId == parent.id, tint: tint) { pick(.category, parent.id) }
+                            ForEach(s.subcategories(of: parent.id)) { sub in
+                                PickRow(title: sub.name, on: categoryId == sub.id, tint: tint) { pick(.category, sub.id) }
+                            }
+                        }
+                    }
+                }
+                .background(MB.bg)
+            }
+        }
+    }
+
+    private func accountPanel(selected: String?, exclude: String?) -> some View {
+        let s = model.snapshot
+        let items = s.sortedGroups.flatMap { g in s.sortedAccounts.filter { $0.groupId == g.id && !$0.hidden && $0.id != exclude } }
+        return Group {
+            if items.isEmpty {
+                MBEmpty(text: "No accounts", emoji: "💳")
+            } else {
+                PickGrid(items: items.map { ($0.id, $0.name) }, selected: selected, tint: tint) { pick(panel ?? .account, $0) }
             }
         }
     }
 
     // MARK: Behaviour
 
-    private func load() {
-        let s = model.snapshot
-        if let t = existing {
-            type = t.type
-            date = Periods.parseStamp(t.date) ?? Date()
-            amountText = Money.format(t.amount, currency: model.currency, symbol: false)
-                .replacingOccurrences(of: Locale.current.groupingSeparator ?? ",", with: "")
-            accountId = t.accountId
-            toAccountId = t.toAccountId
-            categoryId = t.categoryId
-            expandedParent = s.rootCategory(t.categoryId)?.id
-            note = t.note
-            memo = t.memo
-            existingReceipt = t.receipt
-        } else {
-            type = request.type
-            if let day = request.day, day != Periods.today(), let d = Periods.parseStamp(day + "T12:00") {
-                date = d
-            }
-            accountId = s.defaultAccountId.flatMap { s.accounts[$0] != nil ? $0 : nil } ?? s.sortedAccounts.first?.id
+    private var mmDate: String {
+        let f = DateFormatter()
+        f.dateFormat = "EEE, dd/MM/yyyy"
+        return f.string(from: date)
+    }
+    private var mmTime: String {
+        let f = DateFormatter()
+        f.dateFormat = "HH.mm"
+        return f.string(from: date)
+    }
+
+    private func showPanel(_ kind: Panel?) {
+        focus = nil
+        withAnimation(.easeOut(duration: 0.22)) { panel = kind }
+        if kind == .category { openParent = nil }
+        keypadFocused = true
+    }
+
+    /// Money Manager walks the fields top to bottom: amount → category (or From → To) → account → note.
+    private func next(after kind: Panel) -> Panel? {
+        if type == .transfer {
+            if kind == .amount { return accountId == nil ? .account : toAccountId == nil ? .to : nil }
+            return kind == .account && toAccountId == nil ? .to : nil
         }
-        DispatchQueue.main.async { focus = .amount }
+        if kind == .amount { return categoryId == nil ? .category : accountId == nil ? .account : nil }
+        return kind == .category && accountId == nil ? .account : nil
+    }
+
+    private func pick(_ kind: Panel, _ id: String) {
+        switch kind {
+        case .account: accountId = id
+        case .to: toAccountId = id
+        case .category: categoryId = id; openParent = nil
+        case .amount: break
+        }
+        advance(from: kind)
+    }
+
+    private func advance(from kind: Panel) {
+        if let n = next(after: kind) {
+            showPanel(n)
+        } else {
+            withAnimation(.easeOut(duration: 0.22)) { panel = nil }
+            if note.isEmpty { focus = .note }
+        }
+    }
+
+    private func typeKey(_ k: String) {
+        var v = amount
+        switch k {
+        case "done", "=":
+            let n = Self.evaluate(v)
+            amount = n.map { $0 > 0 ? Self.plain($0) : "" } ?? (v.contains(where: { "+-×÷".contains($0) }) ? "" : v)
+            if k == "done" { advance(from: .amount) }
+            return
+        case "back": v = String(v.dropLast())
+        case "+", "-", "×", "÷":
+            if let last = v.last, "+-×÷".contains(last) { v.removeLast() }
+            if !v.isEmpty || k == "-" { v += k }
+        case ".":
+            let last = Self.lastNumber(v)
+            if !last.contains(".") { v += last.isEmpty ? "0." : "." }
+        default:
+            let last = Self.lastNumber(v)
+            if let dot = last.firstIndex(of: "."), last[last.index(after: dot)...].count >= max(digits, 0) { return }
+            v = last == "0" ? String(v.dropLast()) + k : v + k
+        }
+        amount = v
+    }
+
+    /// Typing on the Mac keyboard drives the keypad while it's open.
+    private func keyboard(_ press: KeyPress) -> KeyPress.Result {
+        if press.key == .escape, panel != nil { withAnimation { panel = nil }; return .handled }
+        guard panel == .amount, focus == nil, press.modifiers.subtracting(.shift).isEmpty else { return .ignored }
+        if press.key == .return { typeKey("done"); return .handled }
+        if press.key == .delete { typeKey("back"); return .handled }
+        let map: [String: String] = ["*": "×", "x": "×", "/": "÷", ",": ".", "=": "="]
+        let c = map[press.characters] ?? press.characters
+        if c.count == 1, "0123456789+-×÷.=".contains(c) { typeKey(c); return .handled }
+        return .ignored
     }
 
     private func switchType(_ t: TxType) {
         guard t != type else { return }
         type = t
-        if let c = categoryId, model.snapshot.categories[c]?.type.rawValue != t.rawValue {
-            categoryId = nil
-            expandedParent = nil
-        }
+        if let c = categoryId, model.snapshot.categories[c]?.type.rawValue != t.rawValue { categoryId = nil }
+        if panel == .category && t == .transfer { panel = nil }
         error = nil
     }
 
+    private func load() {
+        let s = model.snapshot
+        if let t = existing {
+            type = t.type
+            date = Periods.parseStamp(t.date) ?? Date()
+            amount = Self.plain(t.amount)
+            accountId = t.accountId
+            toAccountId = t.toAccountId
+            categoryId = t.categoryId
+            note = t.note
+            memo = t.memo
+            existingReceipt = t.receipt
+        } else {
+            type = request.type
+            if let day = request.day, day != Periods.today(), let d = Periods.parseStamp(day + "T12:00") { date = d }
+            let preferred = request.accountId ?? s.defaultAccountId
+            accountId = preferred.flatMap { s.accounts[$0] != nil ? $0 : nil } ?? s.sortedAccounts.first?.id
+            let first = request.startPanel ?? .amount
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { showPanel(first) }
+        }
+    }
+
     private func chooseReceipt() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose a receipt photo"
-        if panel.runModal() == .OK, let url = panel.url, let r = PendingReceipt(url: url) {
+        let p = NSOpenPanel()
+        p.allowedContentTypes = [.image]
+        p.allowsMultipleSelection = false
+        p.message = "Choose a receipt photo"
+        if p.runModal() == .OK, let url = p.url, let r = PendingReceipt(url: url) {
             pendingReceipt = r
             removeReceipt = false
         }
     }
 
     private func save(continuing: Bool) async {
+        guard !saving else { return }
         error = nil
-        guard let amount = Money.parse(amountText), amount > 0 else {
-            error = "Enter an amount."
-            focus = .amount
-            return
-        }
+        let value = Self.evaluate(amount) ?? 0
         guard let accountId else { error = "Choose an account."; return }
         if type == .transfer {
-            guard let toAccountId else { error = "Choose the account to transfer to."; return }
-            if toAccountId == accountId { error = "Choose two different accounts."; return }
+            guard let toAccountId else { error = "Choose the destination account."; return }
+            if toAccountId == accountId { error = "Pick two different accounts."; return }
         }
+        guard value > 0 else { error = "Enter an amount."; showPanel(.amount); return }
         var d = TransactionDraft()
         d.id = request.transactionId
         d.type = type
         d.date = date
-        d.amount = amount
+        d.amount = value
         d.accountId = accountId
         d.toAccountId = type == .transfer ? toAccountId : nil
         d.categoryId = type == .transfer ? nil : categoryId
@@ -328,98 +535,183 @@ struct TransactionEditor: View {
                 try? await model.removeReceipt(transactionId: saved.id)
             }
             if continuing {
-                withAnimation { savedCount += 1 }
-                amountText = ""
+                savedCount += 1
+                amount = ""
                 note = ""
                 memo = ""
                 pendingReceipt = nil
-                focus = .amount
+                date = Date()
+                showPanel(.amount)
             } else {
-                dismiss()
+                close()
             }
         } catch {
             self.error = error.localizedDescription
         }
     }
-}
 
-/// Category picker: a grid of emoji + name; parents with subcategories expand into a chip row.
-struct CategoryGrid: View {
-    @Environment(AppModel.self) private var model
-    var type: CategoryType
-    @Binding var selection: String?
-    @Binding var expandedParent: String?
+    // MARK: Calculator
 
-    var body: some View {
-        let s = model.snapshot
-        let parents = s.topCategories(type)
-        let tint = type == .income ? Palette.income : Palette.expense
-        VStack(alignment: .leading, spacing: 8) {
-            // A plain grid (not Lazy) so it sizes exactly to its rows inside the form's Grid.
-            let columns = 5
-            Grid(horizontalSpacing: 4, verticalSpacing: 8) {
-                ForEach(0..<((parents.count + columns - 1) / columns), id: \.self) { row in
-                    GridRow {
-                        ForEach(0..<columns, id: \.self) { col in
-                            let i = row * columns + col
-                            if i < parents.count { tile(parents[i], s: s, tint: tint) } else { Color.clear.frame(height: 1) }
-                        }
-                    }
-                }
-            }
-            if let pid = expandedParent, let parent = s.categories[pid] {
-                let subs = s.subcategories(of: pid)
-                if !subs.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            chip("\(parent.icon) \(parent.name)", selected: selection == pid, tint: tint) { selection = pid }
-                            ForEach(subs) { sub in
-                                chip(sub.icon.isEmpty ? sub.name : "\(sub.icon) \(sub.name)", selected: selection == sub.id, tint: tint) { selection = sub.id }
-                            }
-                        }
-                    }
-                }
-            }
-            if parents.isEmpty {
-                Text("No \(type.label.lowercased()) categories. Add some in Settings.").font(.caption).foregroundStyle(.secondary)
-            }
-        }
+    private static func lastNumber(_ v: String) -> String {
+        String(v.split(omittingEmptySubsequences: false) { "+-×÷".contains($0) }.last ?? "")
     }
 
-    @ViewBuilder
-    private func tile(_ c: MoneybookCore.Category, s: Snapshot, tint: Color) -> some View {
-        let selected = s.rootCategory(selection)?.id == c.id
-        let hasSubs = !s.subcategories(of: c.id).isEmpty
-        Button {
-            selection = c.id
-            expandedParent = hasSubs ? c.id : nil
-        } label: {
-            VStack(spacing: 5) {
-                Text(c.icon.isEmpty ? "•" : c.icon)
-                    .font(.system(size: 20))
-                    .frame(width: 36, height: 36)
-                    .background(selected ? tint.opacity(0.22) : Color.primary.opacity(0.05), in: Circle())
-                    .overlay(Circle().strokeBorder(selected ? tint : .clear, lineWidth: 2))
-                HStack(spacing: 2) {
-                    Text(c.name).font(.caption.weight(selected ? .semibold : .regular)).lineLimit(1)
-                    if hasSubs { Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold)).foregroundStyle(.secondary) }
-                }
-                .foregroundStyle(selected ? tint : .primary)
+    /// "25000" → "25,000"; grouping only in the integer part of each number, for display.
+    static func grouped(_ expr: String) -> String {
+        var out = "", run = "", afterDot = false
+        func flush() {
+            if afterDot || run.count <= 3 { out += run } else {
+                var g = ""
+                for (i, ch) in run.reversed().enumerated() { if i > 0 && i % 3 == 0 { g.append(",") }; g.append(ch) }
+                out += String(g.reversed())
             }
-            .frame(maxWidth: .infinity, minHeight: 58)
+            run = ""
+            afterDot = false
+        }
+        for ch in expr {
+            if ch.isNumber { run.append(ch) } else { flush(); out.append(ch); afterDot = ch == "." }
+        }
+        flush()
+        return out
+    }
+
+    /// Left-to-right with × ÷ before + −, like the web app's evalAmount.
+    static func evaluate(_ expr: String) -> Double? {
+        var tokens: [String] = []
+        var num = ""
+        for ch in expr {
+            if ch.isNumber || ch == "." { num.append(ch) } else if "+-×÷".contains(ch) {
+                if !num.isEmpty { tokens.append(num); num = "" }
+                tokens.append(String(ch))
+            }
+        }
+        if !num.isEmpty { tokens.append(num) }
+        guard !tokens.isEmpty else { return nil }
+        var terms: [Double] = []
+        var sign = 1.0
+        var i = 0
+        while i < tokens.count {
+            let t = tokens[i]
+            if t == "+" || t == "-" { sign = t == "-" ? -1 : 1 }
+            else if t == "×" || t == "÷" {
+                i += 1
+                guard i < tokens.count, let n = Double(tokens[i]) else { break }
+                let v = terms.popLast() ?? 0
+                terms.append(t == "×" ? v * n : n != 0 ? v / n : 0)
+            } else if let n = Double(t) { terms.append(sign * n); sign = 1 }
+            i += 1
+        }
+        guard !terms.isEmpty else { return nil }
+        return (terms.reduce(0, +) * 100).rounded() / 100
+    }
+
+    /// 1234.5 → "1234.5" (no grouping, no trailing zeros).
+    static func plain(_ v: Double) -> String {
+        v == v.rounded() ? String(Int64(v)) : String(format: "%.2f", v).replacingOccurrences(of: #"0+$"#, with: "", options: .regularExpression)
+    }
+}
+
+/// `.kpad .key`
+private struct KeypadKey: View {
+    var key: String
+    var top: Bool
+    var disabled: Bool
+    var last: Bool
+    var action: () -> Void
+    @UIState private var hover = false
+
+    var body: some View {
+        let done = key == "done"
+        Button(action: action) {
+            Group {
+                if key == "back" { Image(systemName: "delete.left").font(.system(size: 20)) }
+                else if done { Text("OK").font(.system(size: 18)) }
+                else { Text(key == "-" ? "−" : key).font(.system(size: top ? 24 : "=.".contains(key) ? 22 : 20)) }
+            }
+            .foregroundStyle(done ? .white : disabled ? MB.fg3 : MB.fg)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(done ? (hover ? MB.accentPress : MB.accent) : top || disabled ? MB.bg2 : hover ? MB.bg2 : MB.bg)
+            .overlay(alignment: .trailing) { if !last { MB.line.frame(width: 1) } }
+            .bottomLine()
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(c.name)
+        .disabled(key.isEmpty || disabled)
+        .onHover { hover = $0 }
     }
+}
 
-    private func chip(_ title: String, selected: Bool, tint: Color, action: @escaping () -> Void) -> some View {
+/// `.pgrid`: three columns of names.
+private struct PickGrid: View {
+    var items: [(String, String)]
+    var selected: String?
+    var tint: Color
+    var onPick: (String) -> Void
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 0), count: 3), spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.element.0) { i, item in
+                    PickCell(title: item.1, on: item.0 == selected, tint: tint, last: i % 3 == 2) { onPick(item.0) }
+                }
+            }
+        }
+    }
+}
+
+private struct PickCell: View {
+    var title: String
+    var on: Bool
+    var tint: Color
+    var last: Bool
+    var action: () -> Void
+    @UIState private var hover = false
+
+    var body: some View {
         Button(action: action) {
-            Text(title).font(.callout)
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(selected ? tint : Color.secondary.opacity(0.1), in: Capsule())
-                .foregroundStyle(selected ? Color.white : .primary)
+            Text(title)
+                .font(.system(size: 14, weight: on ? .semibold : .regular))
+                .foregroundStyle(on ? tint : MB.fg)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, minHeight: 60)
+                .background(hover ? MB.bg2 : MB.bg)
+                .overlay(alignment: .trailing) { if !last { MB.line.frame(width: 1) } }
+                .bottomLine()
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hover = $0 }
+    }
+}
+
+/// `.prow`: a row in the two-column category picker.
+private struct PickRow: View {
+    var title: String
+    var suffix: String?
+    var chevron = false
+    var on: Bool
+    var tint: Color
+    var action: () -> Void
+    @UIState private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Text(title).font(.system(size: 14, weight: on ? .semibold : .regular)).foregroundStyle(on ? tint : MB.fg)
+                if let suffix { Text(suffix).font(.system(size: 14)).foregroundStyle(MB.fg3) }
+                Spacer()
+                if chevron { Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(MB.fg3) }
+            }
+            .padding(.leading, 23)
+            .padding(.trailing, 14)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .background(on ? tint.opacity(0.06) : hover ? MB.bg2 : .clear)
+            .bottomLine()
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
     }
 }

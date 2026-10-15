@@ -7,6 +7,9 @@ struct SettingsView: View {
     /// True inside the ⌘, Settings window.
     var standalone = false
 
+    enum Part { case connection, preferences, categories, accounts, groups }
+    var parts: [Part] = [.connection, .preferences, .categories, .groups]
+
     @UIState private var server = ""
     @UIState private var token = ""
     @UIState private var testing = false
@@ -16,17 +19,30 @@ struct SettingsView: View {
     @UIState private var editingGroup: GroupEditRequest?
     @UIState private var deleteCategory: MoneybookCore.Category?
     @UIState private var deleteGroup: AccountGroup?
+    @UIState private var editingAccount: AccountEditRequest?
+    @UIState private var deleteAccount: Account?
     @UIState private var currencyDraft = ""
 
     var body: some View {
         Form {
-            connectionSection
-            preferencesSection
-            categoriesSection
-            groupsSection
+            if parts.contains(.connection) { connectionSection }
+            if parts.contains(.preferences) { preferencesSection }
+            if parts.contains(.categories) { categoriesSection }
+            if parts.contains(.accounts) { accountsSection }
+            if parts.contains(.groups) { groupsSection }
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
+        .sheet(item: $editingAccount) { AccountEditor(request: $0) }
+        .confirmationDialog("Delete \u{201C}\(deleteAccount?.name ?? "")\u{201D}?", isPresented: Binding(get: { deleteAccount != nil }, set: { if !$0 { deleteAccount = nil } })) {
+            Button("Delete Account", role: .destructive) {
+                guard let a = deleteAccount else { return }
+                deleteAccount = nil
+                run { try await model.deleteAccount(a.id) }
+            }
+        } message: {
+            Text("Its transactions stay in your history but will show a deleted account.")
+        }
         .onAppear {
             server = model.serverURL
             token = model.token
@@ -199,6 +215,35 @@ struct SettingsView: View {
             Button("Edit…") { editingCategory = CategoryEditRequest(type: c.type, categoryId: c.id) }
             if !indent { Button("Add Subcategory…") { editingCategory = CategoryEditRequest(type: c.type, parentId: c.id) } }
             Button("Delete…", role: .destructive) { deleteCategory = c }
+        }
+    }
+
+    // MARK: Accounts
+
+    private var accountsSection: some View {
+        let s = model.snapshot
+        return Section {
+            ForEach(s.sortedGroups) { g in
+                ForEach(s.sortedAccounts.filter { $0.groupId == g.id }) { a in
+                    HStack {
+                        Text(a.name).foregroundStyle(a.hidden ? .secondary : .primary)
+                        Text(g.name).font(.caption).foregroundStyle(.secondary)
+                        if a.hidden { Text("Hidden").font(.caption).foregroundStyle(.secondary) }
+                        Spacer()
+                        Button { editingAccount = AccountEditRequest(accountId: a.id) } label: { Image(systemName: "pencil") }
+                            .buttonStyle(.borderless).help("Edit")
+                        Button { deleteAccount = a } label: { Image(systemName: "trash") }
+                            .buttonStyle(.borderless).help("Delete")
+                    }
+                }
+            }
+        } header: {
+            HStack {
+                Text("Accounts")
+                Spacer()
+                Button { editingAccount = AccountEditRequest() } label: { Label("Add Account", systemImage: "plus") }
+                    .buttonStyle(.borderless)
+            }
         }
     }
 

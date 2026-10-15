@@ -16,7 +16,7 @@ enum SnapshotRunner {
         for _ in 0..<60 where model.connection != .online { try? await Task.sleep(for: .milliseconds(250)) }
         try? await Task.sleep(for: .seconds(1))
         guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue.contains("main") == true || $0.title == "Moneybook" }) else {
-            print("snapshot: no main window"); NSApp.terminate(nil); return
+            print("snapshot: no main window among", NSApp.windows.map { "\($0.identifier?.rawValue ?? "-") \($0.title) visible=\($0.isVisible)" }); NSApp.terminate(nil); return
         }
         window.setContentSize(NSSize(width: 1200, height: 780))
 
@@ -31,41 +31,54 @@ enum SnapshotRunner {
         await shot("01-transactions-daily")
         model.transactionsMode = .calendar
         await shot("02-transactions-calendar")
+        model.transactionsMode = .weekly
+        await shot("02b-transactions-weekly")
         model.transactionsMode = .monthly
         await shot("03-transactions-monthly")
         model.transactionsMode = .summary
         await shot("04-transactions-summary")
         model.transactionsMode = .daily
-        model.searchText = "coffee"
-        model.month = model.month.adding(months: -1)
-        await shot("05-transactions-search-prev-month")
-        model.searchText = ""
-        model.goToToday()
+        model.open(.search)
+        await shot("05-search")
+        model.drawers = []
 
         model.section = .stats
+        model.statsMode = .stats
         await shot("06-stats")
-        if let food = model.snapshot.topCategories(.expense).first(where: { $0.name == "Food" }) {
-            model.statsPath = [food.id]
-            await shot("07-stats-food-drilldown")
-            model.statsPath = []
+        if let top = Ledger.byCategory(Ledger.transactions(in: model.period, model.snapshot), type: .expense, model.snapshot).first {
+            model.open(.category(top.id.isEmpty ? nil : top.id, .expense, model.period, Fmt.monthLabel(model.month)))
+            await shot("07-stats-category")
+            model.drawers = []
         }
+        model.statsMode = .note
+        await shot("07b-stats-note")
+        model.statsMode = .budget
+        await shot("10-budget")
+        model.statsMode = .stats
 
         model.section = .accounts
         await shot("08-accounts")
-        if let bank = model.snapshot.accounts.values.first(where: { $0.name == "Bank Account" }) {
-            model.accountsPath = [bank.id]
+        if let acc = model.snapshot.sortedAccounts.first {
+            model.open(.account(acc.id))
             await shot("09-account-detail")
-            model.accountsPath = []
+            model.drawers = []
         }
 
-        model.section = .budget
-        await shot("10-budget")
         model.section = .settings
         await shot("11-settings")
+        model.open(.configuration)
+        await shot("11b-settings-configuration")
+        model.drawers = []
 
         model.section = .transactions
         model.newTransaction()
         await shot("12-editor-new", delay: 1.5, sheet: true)
+        model.editor = nil
+        try? await Task.sleep(for: .seconds(0.8))
+        model.editor = EditorRequest(transactionId: nil, startPanel: .category)
+        await shot("12b-editor-category", delay: 1.5)
+        model.editor = EditorRequest(transactionId: nil, startPanel: .account)
+        await shot("12c-editor-account", delay: 1.5)
         model.editor = nil
         try? await Task.sleep(for: .seconds(0.8))
         let s = model.snapshot
@@ -95,8 +108,9 @@ enum SnapshotRunner {
         await shot("15b-light-daily")
         model.section = .stats
         await shot("16b-light-stats")
-        model.section = .budget
+        model.statsMode = .budget
         await shot("16c-light-budget")
+        model.statsMode = .stats
         NSApp.appearance = nil
 
         renderMenuBar(model: model, to: dir.appendingPathComponent("17-menubar.png"))

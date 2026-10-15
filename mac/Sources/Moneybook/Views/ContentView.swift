@@ -1,28 +1,30 @@
+import AppKit
 import MoneybookCore
 import SwiftUI
 
+/// The web app's desktop layout: sidebar with Add, centred content pane, side panels over a dimmed list.
 struct ContentView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         @Bindable var model = model
-        NavigationSplitView {
-            List(selection: Binding($model.section)) {
-                ForEach(SidebarSection.allCases) { s in
-                    Label(s.title, systemImage: s.symbol).tag(s)
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 260)
-            .safeAreaInset(edge: .top) { SidebarMonthCard().padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 6) }
-            .safeAreaInset(edge: .bottom) { SyncStatusView().padding(12) }
-        } detail: {
+        HStack(spacing: 0) {
+            Sidebar()
             detail
-                .toolbar { toolbarContent }
-                .toolbar(removing: .title)
+                .frame(maxWidth: 1040)
+                .background(MB.bg)
+                .overlay(alignment: .leading) { MB.line.frame(width: 0.5) }
+                .overlay(alignment: .trailing) { MB.line.frame(width: 0.5) }
+                .frame(maxWidth: .infinity)
+                .background(MB.desk)
         }
-        .sheet(item: $model.editor) { request in
-            TransactionEditor(request: request)
-        }
+        .overlay { panels }
+        .ignoresSafeArea()
+        .foregroundStyle(MB.fg)
+        .tint(MB.accent)
+        .animation(.easeOut(duration: 0.25), value: model.drawers)
+        .animation(.easeOut(duration: 0.25), value: model.editor?.id)
+        .onChange(of: model.section) { model.drawers = [] }
         .alert("Moneybook", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: {
@@ -35,54 +37,134 @@ struct ContentView: View {
         case .transactions: TransactionsView()
         case .stats: StatsView()
         case .accounts: AccountsView()
-        case .budget: BudgetView()
-        case .settings: SettingsView()
+        case .settings: SettingsHome()
         }
     }
 
-    @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
-        if model.section != .settings {
-            ToolbarItem(placement: .navigation) {
-                MonthNavigator()
+    /// Pushed pages and the entry form slide in from the right over a dimmed window.
+    @ViewBuilder private var panels: some View {
+        let open = !model.drawers.isEmpty || model.editor != nil
+        ZStack(alignment: .trailing) {
+            if open {
+                Color.black.opacity(0.35)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if model.editor != nil { model.editor = nil } else { model.closeDrawer() }
+                    }
+                    .transition(.opacity)
             }
-        }
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                model.newTransaction()
-            } label: {
-                Label("New Transaction", systemImage: "plus")
+            if let top = model.drawers.last {
+                DrawerPanel { DrawerContent(drawer: top) }
+                    .disabled(model.editor != nil)
+                    .id(top)
+                    .transition(.move(edge: .trailing))
             }
-            .help("New transaction (⌘N)")
+            if let request = model.editor {
+                DrawerPanel { TransactionEditor(request: request) }
+                    .id(request.id)
+                    .transition(.move(edge: .trailing))
+            }
         }
     }
 }
 
-struct MonthNavigator: View {
+/// A 480pt panel on the right edge (`.page.push` on desktop).
+struct DrawerPanel<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        content
+            .frame(width: 480)
+            .frame(maxHeight: .infinity)
+            .background(MB.bg)
+            .compositingGroup()
+            .shadow(color: .black.opacity(0.16), radius: 20, x: -12)
+    }
+}
+
+struct DrawerContent: View {
+    var drawer: Drawer
+    var body: some View {
+        switch drawer {
+        case .account(let id): AccountDetailView(accountId: id)
+        case .category(let id, let type, let period, let label): CategoryDetailView(categoryId: id, type: type, period: period, label: label)
+        case .note(let note, let type, let period): NoteDetailView(note: note, type: type, period: period)
+        case .week(let p): WeekDetailView(period: p)
+        case .day(let d): DayDetailView(day: d)
+        case .search: SearchView()
+        case .configuration: SettingsPage(title: "Configuration", parts: [.connection, .preferences])
+        case .accountsAdmin: SettingsPage(title: "Accounts", parts: [.accounts, .groups])
+        case .categories: SettingsPage(title: "Category", parts: [.categories])
+        case .budgetSetting: BudgetSettingView()
+        case .aiHelp: AIHelpView()
+        }
+    }
+}
+
+/// `.tabbar` on desktop: brand, Add, and the four tabs.
+struct Sidebar: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        HStack(spacing: 8) {
-            ControlGroup {
-                Button { model.step(-1) } label: { Image(systemName: "chevron.left") }
-                    .help(model.navigatesByYear ? "Previous year (⌘[)" : "Previous month (⌘[)")
-                Button { model.step(1) } label: { Image(systemName: "chevron.right") }
-                    .help(model.navigatesByYear ? "Next year (⌘])" : "Next month (⌘])")
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 10) {
+                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 30, height: 30)
+                Text("Moneybook").font(.system(size: 17, weight: .bold))
             }
-            .fixedSize()
-            Text(model.navigatesByYear ? String(model.month.year) : Fmt.monthTitle(model.month))
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .frame(minWidth: 120, alignment: .leading)
-                .help(model.navigatesByYear ? Fmt.range(model.yearPeriod) : Fmt.range(model.period))
-            if !model.isCurrentMonth {
-                Button("Today") { model.goToToday() }
-                    .controlSize(.small)
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
-                    .help("Jump to the current month (⌘T)")
+            .padding(.horizontal, 8)
+            .padding(.bottom, 18)
+
+            Button { model.newTransaction() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus").font(.system(size: 17, weight: .semibold))
+                    Text("Add").font(.system(size: 15, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 42)
+                .background(MB.accent, in: RoundedRectangle(cornerRadius: 9))
+                .shadow(color: MB.accent.opacity(0.3), radius: 3, y: 2)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help("New transaction (⌘N)")
+            .padding(.bottom, 14)
+
+            ForEach(SidebarSection.allCases) { s in
+                SidebarItem(section: s)
+            }
+            Spacer()
+            SyncStatusView().padding(.horizontal, 8)
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 12)
+        .padding(.top, 44)
+        .padding(.bottom, 16)
+        .frame(width: 224)
+        .frame(maxHeight: .infinity)
+        .background(MB.chrome)
+        .overlay(alignment: .trailing) { MB.line.frame(width: 0.5) }
+    }
+}
+
+private struct SidebarItem: View {
+    @Environment(AppModel.self) private var model
+    var section: SidebarSection
+    @UIState private var hover = false
+
+    var body: some View {
+        let on = model.section == section
+        Button { model.section = section } label: {
+            HStack(spacing: 12) {
+                Image(systemName: section.symbol).font(.system(size: 16)).frame(width: 21)
+                Text(section.title).font(.system(size: 14.5, weight: on ? .semibold : .regular))
+                Spacer()
+            }
+            .foregroundStyle(on ? MB.accent : MB.fgNote)
+            .padding(.horizontal, 12)
+            .frame(height: 42)
+            .background(on ? MB.accent.opacity(0.11) : hover ? MB.bg2 : .clear, in: RoundedRectangle(cornerRadius: 9))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
     }
 }
 
@@ -94,7 +176,7 @@ struct SyncStatusView: View {
             Circle().fill(color).frame(width: 7, height: 7)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.caption.weight(.medium))
-                if let detail { Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(2) }
+                if let detail { Text(detail).font(.caption2).foregroundStyle(MB.fg2).lineLimit(2) }
             }
             Spacer(minLength: 0)
             if model.isSyncing { ProgressView().controlSize(.mini) }
@@ -131,34 +213,5 @@ struct SyncStatusView: View {
     private var helpText: String {
         if case .offline(let msg) = model.connection { return msg + "\nClick to retry." }
         return "Click to sync now (⌘R)"
-    }
-}
-
-/// "This month" glance at the top of the sidebar: spent so far against income.
-struct SidebarMonthCard: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        let t = Ledger.totals(Ledger.transactions(in: model.currentPeriod, model.snapshot))
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Spent in \(Fmt.monthName(model.currentMonth))").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-            Text(model.money(t.expense))
-                .font(.money(18, weight: .bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-            if t.income > 0 {
-                ProgressBar(ratio: t.expense / t.income, tint: t.expense > t.income ? Palette.expense : .accentColor, height: 4)
-                Text("\(model.money(max(t.income - t.expense, 0))) left of income").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .contentShape(Rectangle())
-        .onTapGesture {
-            model.goToToday()
-            model.section = .transactions
-        }
-        .help("Open this month's transactions")
     }
 }

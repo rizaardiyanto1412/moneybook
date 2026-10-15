@@ -1,10 +1,12 @@
 # Moneybook for Mac
 
-A native SwiftUI client for the Moneybook server, modelled on Realbyte's *Money Manager*:
-Daily / Calendar / Monthly / Summary transactions, Stats with drill-down, Accounts with running
-balances, Budgets, Settings and a menu bar extra with quick add. It is online-first with a local
-cache, so it opens instantly and stays readable offline. Expenses your AI adds through MCP show up
-within about 10 seconds, marked with a ✨.
+A native SwiftUI client for the Moneybook server, laid out like the web app's desktop view: sidebar
+with Add, Daily / Calendar / Weekly / Monthly / Summary transactions, Stats / Budget / Note, Accounts
+and a Settings grid, with pages and the entry form opening as a side panel. The entry form has Money
+Manager's docked calculator keypad and category / account pickers (the Mac keyboard types into the
+keypad too). There's also a menu bar extra with quick add. It is online-first with a local cache, so
+it opens instantly and stays readable offline. Expenses your AI adds through MCP show up within
+about 10 seconds, marked with a ✦.
 
 Requires macOS 15 or later. Builds with the Command Line Tools alone; Xcode isn't needed.
 

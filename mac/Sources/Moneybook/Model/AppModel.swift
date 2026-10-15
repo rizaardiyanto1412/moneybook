@@ -5,23 +5,44 @@ import MoneybookCore
 import Observation
 
 enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
-    case transactions, stats, accounts, budget, settings
+    case transactions, stats, accounts, settings
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
     var symbol: String {
         switch self {
         case .transactions: "list.bullet.rectangle"
-        case .stats: "chart.pie"
+        case .stats: "chart.bar.xaxis"
         case .accounts: "creditcard"
-        case .budget: "gauge.with.dots.needle.33percent"
         case .settings: "gearshape"
         }
     }
 }
 
 enum TransactionsMode: String, CaseIterable, Identifiable {
-    case daily = "Daily", calendar = "Calendar", monthly = "Monthly", summary = "Summary"
+    case daily = "Daily", calendar = "Calendar", weekly = "Weekly", monthly = "Monthly", summary = "Summary"
     var id: String { rawValue }
+}
+
+/// Stats tab: Stats (pie) / Budget / Note, like the web app.
+enum StatsMode: String, CaseIterable, Identifiable {
+    case stats = "Stats", budget = "Budget", note = "Note"
+    var id: String { rawValue }
+}
+
+/// A page that opens as a side panel over the dimmed list (the web app's pushed pages).
+enum Drawer: Hashable {
+    case account(String)
+    /// Top-level category (nil = uncategorized) of one type in a period, with the period's label.
+    case category(String?, TxType, Period, String)
+    case note(String, TxType, Period)
+    case week(Period)
+    case day(String)
+    case search
+    case configuration
+    case accountsAdmin
+    case categories(CategoryType)
+    case budgetSetting
+    case aiHelp
 }
 
 enum ConnectionState: Equatable {
@@ -37,6 +58,9 @@ struct EditorRequest: Identifiable {
     var transactionId: String?
     var type: TxType = .expense
     var day: String?
+    var accountId: String?
+    /// Picker to open first (screenshots); new entries otherwise start at the amount.
+    var startPanel: TransactionEditor.Panel?
 }
 
 /// What the editor sends to the server.
@@ -65,9 +89,12 @@ final class AppModel {
     var month: YearMonth
     var transactionsMode: TransactionsMode = .daily
     var searchText = ""
-    /// Drill-down stacks (category ids / account ids), kept here so they survive section switches.
-    var statsPath: [String] = []
-    var accountsPath: [String] = []
+    var statsMode: StatsMode = .stats
+    var statsType: TxType = .expense
+    /// Stats by year instead of month.
+    var statsYear = false
+    /// Side panels, bottom to top.
+    var drawers: [Drawer] = []
     var editor: EditorRequest?
     var errorMessage: String?
 
@@ -297,8 +324,12 @@ final class AppModel {
     var currentMonth: YearMonth { Periods.yearMonth(containing: Periods.today(), startDay: snapshot.monthStartDay) }
     var currentPeriod: Period { Periods.month(currentMonth, startDay: snapshot.monthStartDay) }
     var yearPeriod: Period { Periods.year(month.year, startDay: snapshot.monthStartDay) }
-    /// The Monthly tab navigates by year.
-    var navigatesByYear: Bool { section == .transactions && transactionsMode == .monthly }
+    /// The Monthly tab (and Stats in year mode) navigate by year.
+    var navigatesByYear: Bool {
+        (section == .transactions && transactionsMode == .monthly) || (section == .stats && statsYear && statsMode != .budget)
+    }
+    func open(_ d: Drawer) { drawers.append(d) }
+    func closeDrawer() { if !drawers.isEmpty { drawers.removeLast() } }
 
     func step(_ delta: Int) {
         month = month.adding(months: navigatesByYear ? delta * 12 : delta)
@@ -306,8 +337,8 @@ final class AppModel {
     func goToToday() { month = currentMonth }
     var isCurrentMonth: Bool { navigatesByYear ? month.year == currentMonth.year : month == currentMonth }
 
-    func newTransaction(type: TxType = .expense, day: String? = nil) {
-        editor = EditorRequest(transactionId: nil, type: type, day: day)
+    func newTransaction(type: TxType = .expense, day: String? = nil, accountId: String? = nil) {
+        editor = EditorRequest(transactionId: nil, type: type, day: day, accountId: accountId)
     }
     func edit(_ id: String) {
         editor = EditorRequest(transactionId: id)
